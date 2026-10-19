@@ -277,3 +277,122 @@ export function computeMarginLeaks(
 
   return [leak1, leak2, leak3]
 }
+
+export function computeDataAuthenticityScore(
+  inputs: PrivateIntakeInputs,
+  discoveredRev?: number,
+  _discoveredAdSpend?: number
+): import('./types').DataAuthenticityScore {
+  const isCustomRev = inputs.revenueMode === 'CUSTOM_USER_OVERRIDE'
+  const isCustomAdSpend = inputs.adSpendMode === 'CUSTOM_USER_OVERRIDE'
+
+  if (!isCustomRev && !isCustomAdSpend) {
+    return {
+      scorePct: 98,
+      label: '98% Verified Online Data',
+      isDualScenario: false,
+      onlineVsCustomVariancePct: 0,
+    }
+  }
+
+  const baselineRev = discoveredRev || inputs.monthlyRevenue
+  const variancePct = Math.round(
+    Math.abs((inputs.monthlyRevenue - baselineRev) / Math.max(1, baselineRev)) * 100
+  )
+
+  const isDual = variancePct > 15 || inputs.revenueMode === 'BLENDED'
+  const scorePct = Math.max(70, Math.min(95, Math.round(98 - variancePct * 0.35)))
+
+  return {
+    scorePct,
+    label: isDual
+      ? `Dual-Scenario: Custom vs Online (${variancePct}% Variance)`
+      : `${scorePct}% Calibrated Intake`,
+    isDualScenario: isDual,
+    onlineVsCustomVariancePct: variancePct,
+  }
+}
+
+export function buildFourSourceWaterfall(
+  inputs: PrivateIntakeInputs,
+  financials: FinancialMetrics,
+  shopifyData: ScrapedCatalogMetrics,
+  techScan: TechScanResult,
+  metaAds: MetaAdTelemetry,
+  benchmark: VerticalBenchmark,
+  leaks: MarginLeak[],
+  subNicheName = 'Direct-to-Consumer Commerce',
+  aiPresenceStatus = 'ZERO_AI_PRESENCE',
+  qualificationPulse?: import('./types').AgencyQualificationAnswers
+): import('./types').FourSourceWaterfall {
+  const grossProfitDollars = Math.round(inputs.monthlyRevenue * (1 - inputs.cogsPct / 100))
+  const refundBleedDollars = Math.round(inputs.monthlyRevenue * (inputs.refundRatePct / 100))
+  const netContributionProfitDollars = Math.round(
+    grossProfitDollars - refundBleedDollars - inputs.monthlyAdSpend
+  )
+  const netContributionMarginPct = Number(
+    ((netContributionProfitDollars / inputs.monthlyRevenue) * 100).toFixed(1)
+  )
+
+  const repeatRate = benchmark.repeatRate90dPct || 35
+  const repeatMultiplier = 1 + (repeatRate / 100) * 0.85
+  const ninetyDayCustomerLTV = Math.round(financials.effectiveAOV * repeatMultiplier)
+
+  const hasHistorical = Boolean(
+    shopifyData.skuAnalytics?.historicalCatalog?.historicalDataAvailable ||
+      shopifyData.catalogAgeYears !== undefined
+  )
+
+  return {
+    source1PublicData: {
+      catalogMedianPrice: shopifyData.medianSkuPrice,
+      catalogMeanPrice: shopifyData.meanSkuPrice,
+      bundleRatioPct: shopifyData.bundleRatioPct,
+      scriptCount: techScan.externalScriptCount,
+      hasCapiSignal: techScan.hasCapiSignal,
+      activeAdCount: metaAds.activeAdCount,
+      adsVerified: metaAds.adsVerified ?? metaAds.activeAdCount > 0,
+      adEvaluationNotice:
+        metaAds.adEvaluationNotice ||
+        (metaAds.activeAdCount > 0
+          ? `Live Meta Ad Library Telemetry Verified (${metaAds.activeAdCount} Public Ads Found)`
+          : 'Evaluated via Current On-Site Pixel & Offer Posture (0 Public Ad Library Items Found)'),
+      aiPresenceStatus,
+      historicalCatalogAvailable: hasHistorical,
+    },
+    source2PrivateConfirmed: {
+      monthlyRevenue: inputs.monthlyRevenue,
+      revenueMode: inputs.revenueMode || 'CONFIRMED_ONLINE',
+      monthlyAdSpend: inputs.monthlyAdSpend,
+      adSpendMode: inputs.adSpendMode || 'CONFIRMED_ONLINE',
+      cogsPct: inputs.cogsPct,
+      cogsMode: inputs.cogsMode || 'CONFIRMED_ONLINE',
+      refundRatePct: inputs.refundRatePct,
+      refundMode: inputs.refundMode || 'CONFIRMED_ONLINE',
+      qualificationPulse,
+      varianceExplanations: inputs.varianceExplanations,
+    },
+    source3IndustryReport2026: {
+      subNicheName,
+      reportSource: 'Nyxir 2026 Institutional Commerce Index',
+      benchmarkAOV: benchmark.benchmarkAOV,
+      healthyCAC: benchmark.healthyBlendedCAC,
+      healthyMER: benchmark.healthyMER,
+      repeatRate90dPct: repeatRate,
+      avgRefundRatePct: benchmark.avgRefundRatePct,
+    },
+    source4DerivedEstimations: {
+      effectiveAOV: financials.effectiveAOV,
+      monthlyOrders: financials.monthlyOrders,
+      grossProfitDollars,
+      refundBleedDollars,
+      netContributionProfitDollars,
+      netContributionMarginPct,
+      impliedBlendedCAC: financials.impliedBlendedCAC,
+      firstOrderNetCashPerCustomer: financials.firstOrderNetContributionPerOrder,
+      ninetyDayCustomerLTV,
+      threeMarginLeaks: leaks,
+    },
+  }
+}
+

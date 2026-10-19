@@ -85,6 +85,10 @@ function RunContent() {
           monthlyAdSpend: Number(searchParams.get('monthlyAdSpend') || '50000'),
           cogsPct: Number(searchParams.get('cogsPct') || '24'),
           refundRatePct: Number(searchParams.get('refundRatePct') || '6'),
+          revenueMode: searchParams.get('revenueMode') || 'CONFIRMED_ONLINE',
+          adSpendMode: searchParams.get('adSpendMode') || 'CONFIRMED_ONLINE',
+          cogsMode: searchParams.get('cogsMode') || 'CONFIRMED_ONLINE',
+          refundMode: searchParams.get('refundMode') || 'CONFIRMED_ONLINE',
           agencyName: agencyPartner || undefined,
         }
 

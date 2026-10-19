@@ -6,8 +6,10 @@ interface StrategyModalProps {
   isOpen: boolean
   onClose: () => void
   domain: string
-  totalRecoverableCash: number
+  totalRecoverableCash?: number
+  totalMarginLeak?: number
   calendarUrl?: string
+  agencyName?: string
 }
 
 export default function StrategyModal({
@@ -15,8 +17,11 @@ export default function StrategyModal({
   onClose,
   domain,
   totalRecoverableCash,
+  totalMarginLeak,
   calendarUrl = 'https://cal.com',
+  agencyName,
 }: StrategyModalProps) {
+  const recoverableAmount = totalRecoverableCash ?? totalMarginLeak ?? 0
   if (!isOpen) return null
 
   return (
@@ -39,7 +44,7 @@ export default function StrategyModal({
             Book CQI Strategy Call for {domain}
           </h2>
           <p className="text-xs text-slate-600 leading-relaxed">
-            Your growth partner will review your live telemetry, unlock the 3-step remediation blueprint, and establish your implementation roadmap to capture up to <strong>+${totalRecoverableCash.toLocaleString()}/month</strong> in recoverable margin.
+            {agencyName ? `${agencyName} Growth Team` : 'Your growth partner'} will review your live telemetry, unlock the 3-step remediation blueprint, and establish your implementation roadmap to capture up to <strong>+${recoverableAmount.toLocaleString()}/month</strong> in recoverable margin.
           </p>
         </div>
 
@@ -55,7 +60,7 @@ export default function StrategyModal({
           </div>
           <div className="flex items-center justify-between text-slate-700">
             <span className="font-semibold">Target Value:</span>
-            <span className="font-bold text-emerald-700">+${totalRecoverableCash.toLocaleString()}/mo</span>
+            <span className="font-bold text-emerald-700">+${recoverableAmount.toLocaleString()}/mo</span>
           </div>
         </div>
 

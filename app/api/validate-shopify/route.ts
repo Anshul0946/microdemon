@@ -38,7 +38,15 @@ export async function POST(req: NextRequest) {
       return NextResponse.json(result, { status })
     }
 
-    return NextResponse.json(result, { status: 200 })
+    let discovery = null
+    try {
+      const { runStep1StoreDiscovery } = await import('@/lib/data/discovery')
+      discovery = await runStep1StoreDiscovery(syntax.normalizedDomain)
+    } catch {
+      // discovery will be fetched on configure page if needed
+    }
+
+    return NextResponse.json({ ...result, discovery }, { status: 200 })
   } catch (err: unknown) {
     const errObj = err as Error
     return NextResponse.json(

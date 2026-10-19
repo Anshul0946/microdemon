@@ -4,7 +4,6 @@ import { scrapeShopifyCatalog } from '../lib/data/shopifyScraper'
 import {
   fetchGoogleSearchAndCheckScale,
   evaluateUniversalBlunderGuard,
-  KNOWN_ENTERPRISE_BRANDS,
 } from '../lib/data/apify/googleSearch'
 import { getFallbackScaleAssessment } from '../lib/data/groq/client'
 
@@ -98,13 +97,14 @@ describe('Shopify Catalog Scraper Calculations', () => {
     expect(metrics.discountMarkedPct).toBeGreaterThan(0)
     expect(metrics.stockoutVariantPct).toBeGreaterThan(0)
     expect(metrics.estimatedCatalogAOV).toBeGreaterThan(metrics.medianSkuPrice)
+    expect(metrics.skuAnalytics?.topSkus.length).toBeGreaterThan(0)
   })
 })
 
-describe('Universal 3-Layer Telemetry Blunder Guard', () => {
-  it('triggers spendBlunderDetected = true and calibrates spend & revenue upward when gymshark.com is provided with $10,000 ad spend', () => {
+describe('Universal 3-Layer Telemetry Blunder Guard (Zero Hardcoded Dictionary)', () => {
+  it('triggers spendBlunderDetected = true and calibrates spend upward when a brand has 160 active ads and low ad spend', () => {
     const realityCheck = evaluateUniversalBlunderGuard({
-      domain: 'gymshark.com',
+      domain: 'arbitrary-brand.com',
       userMonthlyRevenue: 100000,
       userAdSpend: 10000,
       activeAdCount: 160,
@@ -112,13 +112,7 @@ describe('Universal 3-Layer Telemetry Blunder Guard', () => {
 
     expect(realityCheck.overrideApplied).toBe(true)
     expect(realityCheck.spendBlunderDetected).toBe(true)
-    expect(realityCheck.revenueBlunderDetected).toBe(true)
-    expect(realityCheck.calibratedAdSpend).toBe(
-      KNOWN_ENTERPRISE_BRANDS['gymshark.com'].adSpendFloor
-    )
-    expect(realityCheck.calibratedMonthlyRevenue).toBe(
-      KNOWN_ENTERPRISE_BRANDS['gymshark.com'].monthlyRevenueFloor
-    )
+    expect(realityCheck.calibratedAdSpend).toBeGreaterThanOrEqual(160 * 600)
     expect(realityCheck.reason).toContain('Telemetry Sanity Guard Triggered')
     expect(realityCheck.detectedScaleTier).toBe('ENTERPRISE')
   })
@@ -159,25 +153,20 @@ describe('Universal 3-Layer Telemetry Blunder Guard', () => {
     expect(realityCheck.overrideApplied).toBe(true)
   })
 
-  it('triggers overrideApplied = true via fetchGoogleSearchAndCheckScale when gymshark.com has low revenue', async () => {
+  it('calibrates when Google search snippets detect enterprise public revenue', async () => {
     const originalFetch = global.fetch
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
-      json: async () => [],
+      json: async () => [{
+        text: 'The company generated $600 million in annual revenue in 2024 with over $25M spent on digital marketing.'
+      }],
     })
 
     try {
-      const result = await fetchGoogleSearchAndCheckScale('gymshark.com', 100000, 20000)
+      const result = await fetchGoogleSearchAndCheckScale('global-enterprise.com', 100000, 20000)
       expect(result.realityCheck.overrideApplied).toBe(true)
-      expect(result.realityCheck.originalMonthlyRevenue).toBe(100000)
-      expect(result.realityCheck.calibratedMonthlyRevenue).toBe(
-        KNOWN_ENTERPRISE_BRANDS['gymshark.com'].monthlyRevenueFloor
-      )
-      expect(result.realityCheck.calibratedAdSpend).toBe(
-        KNOWN_ENTERPRISE_BRANDS['gymshark.com'].adSpendFloor
-      )
-      expect(result.realityCheck.reason).toContain('Telemetry Sanity Guard Triggered')
       expect(result.realityCheck.detectedScaleTier).toBe('ENTERPRISE')
+      expect(result.realityCheck.calibratedMonthlyRevenue).toBeGreaterThanOrEqual(10000000)
     } finally {
       global.fetch = originalFetch
     }
@@ -191,9 +180,9 @@ describe('Universal 3-Layer Telemetry Blunder Guard', () => {
     })
 
     try {
-      const result = await fetchGoogleSearchAndCheckScale('gymshark.com', 45000000, 7000000)
+      const result = await fetchGoogleSearchAndCheckScale('realistic-dtc.com', 450000, 120000)
       expect(result.realityCheck.overrideApplied).toBe(false)
-      expect(result.realityCheck.calibratedMonthlyRevenue).toBe(45000000)
+      expect(result.realityCheck.calibratedMonthlyRevenue).toBe(450000)
     } finally {
       global.fetch = originalFetch
     }

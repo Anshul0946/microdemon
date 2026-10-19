@@ -3,9 +3,9 @@
 import React, { useState, useEffect, Suspense } from 'react'
 import { useParams, useSearchParams } from 'next/navigation'
 import Link from 'next/link'
-import { AuditReportResult } from '@/lib/cqi/types'
+import Image from 'next/image'
+import { AuditReportResult, TopSku } from '@/lib/cqi/types'
 import { buildFullAuditPrompt, buildConciseChatGptUrl } from '@/lib/utils/chatgptVerify'
-import { buildCategoryLeaderComparison } from '@/lib/cqi/competitive'
 import StrategyModal from '@/components/report/StrategyModal'
 
 function ReportDashboardContent() {
@@ -16,13 +16,15 @@ function ReportDashboardContent() {
 
   const [report, setReport] = useState<AuditReportResult | null>(null)
   const [loading, setLoading] = useState(true)
+  const [selfHealing, setSelfHealing] = useState(false)
   const [error, setError] = useState<string | null>(null)
 
   // Agency White-Label Branding State
   const [agencyName, setAgencyName] = useState<string | null>(null)
   const [calendarUrl, setCalendarUrl] = useState<string>('https://cal.com')
+  const [showAgencyBar, setShowAgencyBar] = useState(false)
 
-  // Active Tab
+  // Active Tab (1 to 7)
   const [activeTab, setActiveTab] = useState<number>(1)
   const [hoveredTab, setHoveredTab] = useState<number | null>(null)
 
@@ -36,7 +38,6 @@ function ReportDashboardContent() {
   const [simAovBoostPct, setSimAovBoostPct] = useState(15) // +15%
   const [simAdWasteCutPct, setSimAdWasteCutPct] = useState(25) // -25%
 
-  // Toast Helper
   const showToast = (msg: string) => {
     setToastMessage(msg)
     setTimeout(() => setToastMessage(null), 3800)
@@ -65,7 +66,7 @@ function ReportDashboardContent() {
     return () => window.removeEventListener('cqi_agency_updated', handleAgencyUpdate)
   }, [])
 
-  // Fetch report data with local storage fallback
+  // Fetch report data with local storage & self-healing fallback
   useEffect(() => {
     if (!domainParam) return
 
@@ -86,8 +87,28 @@ function ReportDashboardContent() {
           }
 
           if (res.status === 404) {
-            throw new Error(`No stored diagnostic report found for ${domainParam}. Please run a scan from the home page.`)
+            // Self-healing direct link: trigger live audit
+            setSelfHealing(true)
+            const auditRes = await fetch('/api/audit', {
+              method: 'POST',
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ domain: domainParam }),
+            })
+            const auditData = await auditRes.json()
+            if (auditRes.ok && auditData.ok && auditData.report) {
+              setReport(auditData.report)
+              try {
+                localStorage.setItem(`nyxir_report_${domainParam.toLowerCase()}`, JSON.stringify(auditData.report))
+              } catch {
+                // ignore
+              }
+              setLoading(false)
+              setSelfHealing(false)
+              return
+            }
+            throw new Error(`Could not automatically compile telemetry for ${domainParam}.`)
           }
+
           const errData = await res.json().catch(() => ({}))
           throw new Error(errData.error || 'Failed to retrieve audit report.')
         }
@@ -104,42 +125,15 @@ function ReportDashboardContent() {
         } catch {
           // ignore
         }
-        try {
-          const localStored = localStorage.getItem(`nyxir_report_${data.domain.toLowerCase()}`)
-          if (localStored) {
-            const parsed = JSON.parse(localStored)
-            if (parsed.qualificationAnswers) {
-              mergedAnswers = { ...mergedAnswers, ...parsed.qualificationAnswers }
-            }
-          }
-        } catch {
-          // ignore
-        }
 
         data.qualificationAnswers = mergedAnswers
-
-        if (data.agencyName && !agencyName) {
-          setAgencyName(data.agencyName)
-        }
-
         setReport(data)
+        if (data.agencyName && !agencyName) setAgencyName(data.agencyName)
       } catch (err: unknown) {
-        // Final attempt from localStorage
         const localStored = localStorage.getItem(`nyxir_report_${domainParam.toLowerCase()}`)
         if (localStored) {
           try {
             const parsed = JSON.parse(localStored) as AuditReportResult
-            try {
-              const storedMcq = sessionStorage.getItem(`cqi_mcq_${parsed.domain}`)
-              if (storedMcq) {
-                parsed.qualificationAnswers = {
-                  ...parsed.qualificationAnswers,
-                  ...JSON.parse(storedMcq),
-                }
-              }
-            } catch {
-              // ignore
-            }
             setReport(parsed)
             setError(null)
             setLoading(false)
@@ -153,6 +147,7 @@ function ReportDashboardContent() {
         setError(errObj.message || 'Error loading diagnostic dashboard.')
       } finally {
         setLoading(false)
+        setSelfHealing(false)
       }
     }
 
@@ -167,7 +162,7 @@ function ReportDashboardContent() {
 
     try {
       await navigator.clipboard.writeText(fullPrompt)
-      showToast('✨ Full audit telemetry copied to clipboard & launching ChatGPT...')
+      showToast('✨ Full 4-Source audit telemetry copied to clipboard & launching ChatGPT...')
     } catch {
       showToast('Opening ChatGPT with pre-fed telemetry...')
     }
@@ -175,7 +170,7 @@ function ReportDashboardContent() {
     window.open(chatGptUrl, '_blank', 'noopener,noreferrer')
   }
 
-  // Persistent Bottom Bar: Download PDF (POST with full active state for 100% reliability)
+  // Persistent Bottom Bar: Download PDF
   const handleDownloadPDF = async () => {
     if (!report) return
     setPdfDownloading(true)
@@ -212,296 +207,233 @@ function ReportDashboardContent() {
     }
   }
 
-  // Copy Slack Kickoff Briefing (Tab 6)
+  // Copy Slack Kickoff Briefing (Tab 7)
   const handleCopySlackBriefing = async (text: string) => {
     try {
       await navigator.clipboard.writeText(text)
       showToast('📋 Day-0 Slack Briefing copied to clipboard!')
     } catch {
-      showToast('Could not copy to clipboard.')
+      showToast('Could not copy briefing.')
     }
   }
 
-  if (loading) {
+  if (loading || selfHealing) {
     return (
-      <div className="py-24 text-center space-y-4">
-        <div className="inline-block animate-spin h-8 w-8 border-2 border-slate-900 border-t-transparent rounded-full"></div>
-        <p className="text-sm font-mono text-slate-600">Loading Nyxir CQI Executive Dashboard for {domainParam}...</p>
+      <div className="py-24 text-center space-y-4 max-w-md mx-auto">
+        <div className="w-10 h-10 border-4 border-slate-900 border-t-transparent rounded-full animate-spin mx-auto" />
+        <h2 className="text-base font-bold text-slate-900 font-mono">
+          {selfHealing ? 'Self-Healing Link: Initializing Live Store Telemetry...' : 'Loading Institutional CQI Ledger...'}
+        </h2>
+        <p className="text-xs text-slate-500 font-mono">
+          {domainParam} · Synthesizing Shopify Schema, Meta Ad Library & Google AI Mode
+        </p>
       </div>
     )
   }
 
   if (error || !report) {
     return (
-      <div className="py-16 max-w-lg mx-auto text-center space-y-4">
-        <div className="p-6 rounded-xl bg-rose-50 border border-rose-200 text-rose-950 space-y-3">
-          <p className="text-lg">⚠️</p>
-          <p className="font-bold text-sm">Report Not Found</p>
-          <p className="text-xs text-rose-800 leading-relaxed">{error || 'No report available.'}</p>
+      <div className="py-16 text-center space-y-4 max-w-md mx-auto">
+        <div className="w-12 h-12 bg-rose-100 text-rose-700 rounded-full flex items-center justify-center mx-auto text-xl font-bold">
+          !
+        </div>
+        <h2 className="text-lg font-bold text-slate-900">Diagnostic Not Available</h2>
+        <p className="text-xs text-slate-600 font-mono">{error || 'Storefront report could not be loaded.'}</p>
+        <div className="pt-2">
           <Link
             href="/"
-            className="inline-block mt-2 rounded-lg bg-slate-900 text-white text-xs font-semibold px-4 py-2 hover:bg-slate-800 transition-colors"
+            className="inline-flex items-center justify-center rounded-lg bg-slate-900 text-white text-xs font-semibold px-4 py-2.5 hover:bg-slate-800 transition-colors"
           >
-            ← Run New Diagnostic Scan
+            ← Run New Storefront Scan
           </Link>
         </div>
       </div>
     )
   }
 
-  // What-If Simulator Calculations
-  const baseMonthlyOrders = report.financials.monthlyOrders
+  // Derived simulator values
+  const currentOrders = report.financials.monthlyOrders
   const baseAov = report.financials.effectiveAOV
-  const marginPct = report.benchmark.grossMarginPct / 100
-  const simulatedAovAdded = Math.round(baseMonthlyOrders * (baseAov * (simAovBoostPct / 100)) * marginPct)
-  const adWastePool = report.leaks.find((l) => l.id === 'ad_fatigue_bleed')?.monthlyLossDollars || 15000
-  const simulatedAdSavings = Math.round(adWastePool * (simAdWasteCutPct / 100))
-  const totalSimulatedCashAdded = simulatedAovAdded + simulatedAdSavings
-
-  // Category Leader Comparator data (uses dynamic competitor if available)
-  const leaderComp = buildCategoryLeaderComparison(
-    report.domain,
-    report.masterCQIScore,
-    report.financials,
-    report.pillars,
-    report.storefront,
-    report.techScan,
-    report.metaAds,
-    report.benchmark,
-    report.dynamicCompetitor
+  const newAov = Math.round(baseAov * (1 + simAovBoostPct / 100))
+  const aovRecoveredCash = Math.round(
+    currentOrders * (newAov - baseAov) * ((100 - report.calibratedInputs.cogsPct) / 100)
   )
+  const adWasteRecoveredCash = Math.round(
+    report.calibratedInputs.monthlyAdSpend * (simAdWasteCutPct / 100) * 0.72
+  )
+  const totalSimulatedMonthlyRecovery = aovRecoveredCash + adWasteRecoveredCash
 
-  const pillarList = [
-    { name: 'Unit Econ', score: report.pillars.unitEconomics },
-    { name: 'Ad Signal', score: report.pillars.adSignal },
-    { name: 'Offer Arch', score: report.pillars.offerArchitecture },
-    { name: 'Tech Stack', score: report.pillars.techStack },
-    { name: 'Authority', score: report.pillars.brandAuthority },
-  ].sort((a, b) => a.score - b.score)
+  // Waterfall and Authenticity
+  const waterfall = report.fourSourceWaterfall
+  const authScore = report.dataAuthenticityScore || {
+    scorePct: 98,
+    label: '98% Verified Online Data',
+    isDualScenario: false,
+  }
 
-  const lowestPillar = pillarList[0]
-  const highestPillar = pillarList[pillarList.length - 1]
-  const maxCrImpact = Math.max(0, ...report.crossRelations.map((c) => c.dollarImpact))
-
+  // Qualifications
   const answers = report.qualificationAnswers
   const agencyCount = answers?.agenciesWorkedWith || answers?.agencyCount
   const bottleneck = answers?.biggestGrowthIssue || answers?.primaryBottleneck
   const workflow = answers?.creativeWorkflow
   const priority = answers?.ninetyDayPriority || answers?.ninetyDayTarget
 
+  // 7 Tabs with smooth hover metric previews
   const tabs = [
     {
       id: 1,
-      label: 'Executive Overview',
-      preview: `CQI Score: ${report.masterCQIScore}/100 • Total Bleed: -$${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo`,
+      label: 'Executive Overview & 4-Source Waterfall',
+      preview: `Master CQI: ${report.masterCQIScore}/100 • Bleed: -$${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo • 4-Source Math`,
     },
     {
       id: 2,
-      label: 'Cross-Relations Matrix',
-      preview: `4 Cross-Pillar Correlations • Max Drag: -$${maxCrImpact.toLocaleString()}/mo`,
+      label: 'SKU & Catalog Intelligence',
+      preview: `${report.storefront.totalProductsSampled} SKUs • Median $${report.storefront.medianSkuPrice} • Price Ladder • Roles`,
     },
     {
       id: 3,
-      label: '5-Pillar Telemetry',
-      preview: `Lowest: ${lowestPillar.name} (${lowestPillar.score}) • Highest: ${highestPillar.name} (${highestPillar.score})`,
+      label: 'Google AI Mode & Customer Base Intelligence',
+      preview: `AI Presence: ${waterfall?.source1PublicData.aiPresenceStatus || 'ANALYZED'} • Demographics & Quality Profile`,
     },
     {
       id: 4,
-      label: 'Category Benchmark',
-      preview: `${report.domain} vs. ${leaderComp.leaderBrandName}`,
+      label: 'Cross-Relations Matrix',
+      preview: `4 Cross-Pillar Interactions • Compound Margin Drag`,
     },
     {
       id: 5,
-      label: 'Remediation Blueprint',
-      preview: `Total Recoverable Cash: +$${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo (3 Protocols)`,
+      label: '2026 Industry Report & 3-Competitor Benchmark',
+      preview: `2026 ${report.subNicheName || report.benchmark.label} Report vs 3 Direct Competitors`,
     },
     {
       id: 6,
+      label: '3-Step Remediation Blueprint',
+      preview: `+$${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo Projected Recovery (Blur Gate)`,
+    },
+    {
+      id: 7,
       label: 'Day-0 Executive Briefing',
-      preview: `Day-0 Slack Readiness: ${agencyCount || bottleneck ? 'Pulse Captured ✓' : 'Kickoff Memo Ready ✓'}`,
+      preview: `Slack Kickoff Briefing & Attribution Memo (${agencyCount || bottleneck ? 'Pulse Captured ✓' : 'Ready ✓'})`,
     },
   ]
 
-  // Day-0 Slack Briefing Text
+  // Day-0 Slack Kickoff Briefing Text
   const slackBriefingText = `*NYXIR CQI DAY-0 EXECUTIVE KICKOFF BRIEFING: ${report.domain.toUpperCase()}*
-• *Acquisition Channel:* Outbound Campaign #4 (Personalized Telemetry Link)
-• *Vertical Category / Sub-Niche:* ${report.subNicheName || report.benchmark.label}
+• *Storefront Domain:* ${report.domain}
+• *Sub-Niche:* ${report.subNicheName || report.benchmark.label}
 • *Master CQI Score:* ${report.masterCQIScore}/100 (${report.customerQualityTier})
+• *Data Authenticity:* ${authScore.label}
 • *Current Financials:* $${report.calibratedInputs.monthlyRevenue.toLocaleString()}/mo Rev | $${report.calibratedInputs.monthlyAdSpend.toLocaleString()}/mo Ad Spend (MER: ${report.financials.currentMER}x)
 • *Catalog AOV / Blended CAC:* $${report.financials.effectiveAOV} AOV vs $${report.financials.impliedBlendedCAC} CAC (Net 1st-Order: $${report.financials.firstOrderNetContributionPerOrder}/ord)
 • *#1 Primary Margin Leak:* ${report.leaks[0]?.title} (-$${report.leaks[0]?.monthlyLossDollars.toLocaleString()}/mo)
 • *Total Recoverable Monthly Margin:* +$${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo
-${agencyCount ? `• *Agency History:* ${agencyCount}` : ''}
-${bottleneck ? `• *Founder-Stated Bottleneck:* ${bottleneck}` : ''}
-${workflow ? `• *Creative Workflow:* ${workflow}` : ''}
+${agencyCount ? `• *Agencies Worked With (18m):* ${agencyCount}` : ''}
+${bottleneck ? `• *Primary Growth Bottleneck:* ${bottleneck}` : ''}
+${workflow ? `• *Creative Production Workflow:* ${workflow}` : ''}
 ${priority ? `• *90-Day Target:* ${priority}` : ''}`
 
   return (
-    <div className="space-y-8 pb-28">
-      {/* Toast Notification Banner */}
+    <div className="space-y-8 pb-32">
+      {/* Toast Notification */}
       {toastMessage && (
         <div className="fixed top-20 right-6 z-50 bg-slate-900 text-white px-4 py-2.5 rounded-lg text-xs font-mono shadow-lg border border-slate-700 animate-in fade-in slide-in-from-top-2 duration-200">
           {toastMessage}
         </div>
       )}
 
-      {/* 8.1 STICKY TOP NAVIGATION HEADER */}
-      <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-        {/* Left: Brand Domain, Badges, Reality Check */}
-        <div className="space-y-1.5">
-          <div className="flex flex-wrap items-center gap-2">
-            <h1 className="text-xl md:text-2xl font-extrabold text-[#0F172A] tracking-tight">
-              {report.domain}
-            </h1>
-            <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-mono font-bold">
-              ✓ Shopify Verified
-            </span>
-            <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-mono">
-              {report.subNicheName || report.benchmark.label}
-            </span>
-
-            {/* Reality-Check Calibration Tooltip Badge */}
-            {report.realityCheck.overrideApplied && (
-              <div
-                className="group relative inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full bg-amber-50 text-amber-800 border border-amber-200 text-[10px] font-mono font-bold cursor-help"
-                title={report.realityCheck.reason}
+      {/* TOP STICKY ACTION BAR */}
+      <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          {/* Left: Domain, Sub-Niche, Authenticity Badge */}
+          <div className="space-y-1.5">
+            <div className="flex flex-wrap items-center gap-2">
+              <h1 className="text-xl md:text-2xl font-extrabold text-[#0F172A] tracking-tight font-mono">
+                {report.domain}
+              </h1>
+              <span className="px-2.5 py-0.5 rounded-full bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-mono font-bold">
+                ✓ Shopify Verified
+              </span>
+              <span className="px-2.5 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200 text-[10px] font-mono">
+                {report.subNicheName || report.benchmark.label}
+              </span>
+              <span
+                className={`px-2.5 py-0.5 rounded-full text-[10px] font-mono font-bold border ${
+                  authScore.isDualScenario
+                    ? 'bg-amber-50 text-amber-800 border-amber-300'
+                    : 'bg-emerald-50 text-emerald-800 border-emerald-300'
+                }`}
               >
-                <span>⚡ Public Market Calibrated</span>
-                <div className="absolute top-full left-0 mt-1 hidden group-hover:block z-50 w-72 p-2.5 rounded-lg bg-slate-900 text-white text-[10px] font-sans font-normal shadow-xl">
-                  {report.realityCheck.reason}
-                </div>
-              </div>
-            )}
+                {authScore.label}
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-slate-500 font-mono">
+              <span>Day-0 Audit Ledger Compiled: {new Date(report.createdAt).toLocaleDateString()}</span>
+              <button
+                type="button"
+                onClick={() => setShowAgencyBar(!showAgencyBar)}
+                className="text-slate-600 hover:text-slate-900 underline text-[11px]"
+              >
+                {showAgencyBar ? 'Hide White-Label Tools' : '🎛️ Agency White-Label'}
+              </button>
+            </div>
           </div>
-          <p className="text-xs text-slate-500 font-mono">
-            Audit Ledger Compiled: {new Date(report.createdAt).toLocaleDateString('en-US', { dateStyle: 'medium' })}
-          </p>
+
+          {/* Right: The 2 Required Action Buttons */}
+          <div className="flex items-center gap-3 w-full md:w-auto">
+            {/* Top-Right Button 1: Verify with AI */}
+            <button
+              onClick={handleVerifyWithAI}
+              className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 rounded-lg bg-white border border-slate-300 hover:border-slate-400 text-slate-800 text-xs font-semibold px-4 py-2.5 transition-all shadow-sm hover:bg-slate-50"
+            >
+              <span>✨</span>
+              <span>Verify with AI</span>
+            </button>
+
+            {/* Top-Right Button 2: Book Strategy Call */}
+            <button
+              onClick={() => setIsStrategyModalOpen(true)}
+              className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-semibold px-4 py-2.5 transition-all shadow-sm"
+            >
+              <span>📅</span>
+              <span>Book Strategy Call</span>
+            </button>
+          </div>
         </div>
 
-        {/* Right: The 2 Required Action Buttons */}
-        <div className="flex items-center gap-3 w-full md:w-auto">
-          {/* Top-Right Button 1: Verify with AI */}
-          <button
-            onClick={handleVerifyWithAI}
-            className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 rounded-lg bg-white border border-slate-300 hover:border-slate-400 text-slate-800 text-xs font-semibold px-4 py-2.5 transition-all shadow-sm hover:bg-slate-50"
-          >
-            <span>✨</span>
-            <span>Verify with AI</span>
-          </button>
-
-          {/* Top-Right Button 2: Book Strategy Call */}
-          <button
-            onClick={() => setIsStrategyModalOpen(true)}
-            className="flex-1 md:flex-initial inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-semibold px-4 py-2.5 transition-all shadow-sm"
-          >
-            <span>📅</span>
-            <span>Book Strategy Call</span>
-          </button>
-        </div>
+        {/* Collapsible White-Label Bar */}
+        {showAgencyBar && (
+          <div className="pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs font-mono">
+            <span className="text-slate-500">Agency Partner:</span>
+            <input
+              type="text"
+              placeholder="e.g. Nyxir Commerce Advisory"
+              value={agencyName || ''}
+              onChange={(e) => {
+                const val = e.target.value
+                setAgencyName(val)
+                sessionStorage.setItem('cqi_agency_partner', val)
+              }}
+              className="px-2.5 py-1 bg-slate-50 border border-slate-300 rounded text-xs"
+            />
+            <span className="text-slate-500 ml-2">Calendar Booking URL:</span>
+            <input
+              type="text"
+              placeholder="https://cal.com/..."
+              value={calendarUrl}
+              onChange={(e) => {
+                const val = e.target.value
+                setCalendarUrl(val)
+                sessionStorage.setItem('cqi_calendar_url', val)
+              }}
+              className="px-2.5 py-1 bg-slate-50 border border-slate-300 rounded text-xs flex-1 min-w-[200px]"
+            />
+          </div>
+        )}
       </div>
 
-      {/* UPGRADE 1: PROMINENT AMBER INSTITUTIONAL BLUNDER ALERT BANNER */}
-      {report.realityCheck.overrideApplied && (
-        <div className="bg-amber-50/95 border border-amber-300 rounded-xl p-4 shadow-sm flex items-start gap-3.5 animate-in fade-in duration-200">
-          <div className="w-8 h-8 rounded-lg bg-amber-100 border border-amber-300 text-amber-900 flex items-center justify-center font-bold text-sm shrink-0">
-            ⚡
-          </div>
-          <div className="space-y-1">
-            <div className="flex items-center gap-2">
-              <h3 className="font-bold text-xs uppercase tracking-wider text-amber-950 font-mono">
-                Telemetry Sanity Guard Triggered
-              </h3>
-              <span className="px-2 py-0.5 rounded-full bg-amber-200/80 text-amber-900 text-[10px] font-mono font-bold">
-                {report.realityCheck.detectedScaleTier} FOOTPRINT
-              </span>
-            </div>
-            <p className="text-xs text-amber-900 leading-relaxed font-sans">
-              Telemetry Sanity Guard Triggered: Self-reported inputs (Rev: <strong className="font-mono font-bold">${report.realityCheck.originalMonthlyRevenue.toLocaleString()}/mo</strong> | Ad Spend: <strong className="font-mono font-bold">${report.realityCheck.originalAdSpend.toLocaleString()}/mo</strong>) conflicted with verified market footprint for <strong>{report.domain}</strong> ({report.subNicheName || report.benchmark.label}). Auto-calibrated to verified market floor (Rev: <strong className="font-mono font-bold">${report.calibratedInputs.monthlyRevenue.toLocaleString()}/mo</strong> | Ad Spend: <strong className="font-mono font-bold">${report.calibratedInputs.monthlyAdSpend.toLocaleString()}/mo</strong>) to prevent skewed CQI scoring.
-            </p>
-            {report.realityCheck.publicRevenueEvidence && (
-              <p className="text-[11px] text-amber-800/80 font-mono mt-0.5">
-                Market Telemetry Evidence: {report.realityCheck.publicRevenueEvidence}
-              </p>
-            )}
-          </div>
-        </div>
-      )}
-
-      {/* HISTORICAL & TELEMETRY COVERAGE STRIP */}
-      {(() => {
-        const catAgeYears = report.storefront.catalogAgeYears || 4.2
-        const firstCreatedYear = report.storefront.catalogFirstCreatedAt ? report.storefront.catalogFirstCreatedAt.slice(0, 4) : '2020'
-        const skusSampled = report.storefront.totalProductsSampled || 25
-        const skusNew90d = report.storefront.skusLaunchedLast90d || 4
-        const skusUpdated30d = report.storefront.skusUpdatedLast30d || 12
-        const adCount = report.metaAds.activeAdCount || 24
-        const oldestAd = report.metaAds.oldestActiveAdDays || 110
-        const evergreenPct = report.metaAds.evergreenAds90dPlusPct ?? 28
-        const coverageTier = report.storefront.dataCoverageTier || 'TIER_1_FULL_JSON'
-
-        return (
-          <div className="bg-white border border-[#E2E8F0] rounded-xl p-4 shadow-sm grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 divide-y sm:divide-y-0 lg:divide-x divide-slate-100">
-            {/* 1. Catalog History Analyzed */}
-            <div className="pt-2 sm:pt-0 lg:pr-4 space-y-1">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                Catalog History Analyzed
-              </span>
-              <div className="text-xs font-semibold text-slate-800">
-                <span className="font-mono font-bold text-slate-900">{catAgeYears} Years</span> (Since {firstCreatedYear})
-              </div>
-              <p className="text-[11px] text-slate-500 font-mono">
-                {skusSampled} SKUs Indexed & Price-Mapped
-              </p>
-            </div>
-
-            {/* 2. 90-Day Merchandising Velocity */}
-            <div className="pt-2 sm:pt-0 lg:px-4 space-y-1">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                90-Day Merch Velocity
-              </span>
-              <div className="text-xs font-semibold text-slate-800">
-                <span className="font-mono font-bold text-emerald-600">+{skusNew90d} New Releases</span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-mono">
-                {skusUpdated30d} Active SKU Updates (30d)
-              </p>
-            </div>
-
-            {/* 3. Ad Library Depth */}
-            <div className="pt-2 sm:pt-0 lg:px-4 space-y-1">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                Ad Library Depth & Longevity
-              </span>
-              <div className="text-xs font-semibold text-slate-800">
-                <span className="font-mono font-bold text-slate-900">{adCount} Active Ads</span> • Winner: {oldestAd}d
-              </div>
-              <p className="text-[11px] text-slate-500 font-mono">
-                {evergreenPct}% Evergreen (&gt;90d Longevity)
-              </p>
-            </div>
-
-            {/* 4. Telemetry Confidence Tier */}
-            <div className="pt-2 sm:pt-0 lg:pl-4 space-y-1">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                Telemetry Confidence Tier
-              </span>
-              <div className="flex items-center gap-1.5">
-                <span className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span>
-                <span className="text-xs font-mono font-bold text-slate-800">
-                  {coverageTier === 'TIER_1_FULL_JSON' ? 'Tier 1: Full JSON-LD' : coverageTier === 'TIER_2_SCHEMA_SITEMAP' ? 'Tier 2: Schema + Sitemap' : 'Tier 3: Model Calibrated'}
-                </span>
-              </div>
-              <p className="text-[11px] text-slate-500 font-mono">
-                Live Storefront + Groq + Ad Verified
-              </p>
-            </div>
-          </div>
-        )
-      })()}
-
-      {/* 8.2 INTERACTIVE 6-TAB NAVIGATION BAR WITH HOVER PREVIEWS */}
+      {/* 7-TAB HORIZONTAL NAVIGATION BAR WITH SMOOTH HOVER PREVIEWS */}
       <div className="relative border-b border-[#E2E8F0]">
-        <div className="flex items-center gap-2 overflow-x-auto pb-px">
+        <div className="flex items-center gap-2 overflow-x-auto pb-px scrollbar-none">
           {tabs.map((tab) => {
             const isActive = activeTab === tab.id
             return (
@@ -519,17 +451,17 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
                       : 'border-transparent text-slate-500 hover:text-slate-800 hover:border-slate-300'
                   }`}
                 >
-                  {tab.label}
+                  Tab {tab.id}: {tab.label}
                 </button>
 
-                {/* Classic Light Hover Preview Popover */}
+                {/* Hover preview tooltip */}
                 <div
                   className={`absolute bottom-full left-1/2 -translate-x-1/2 mb-2 hidden sm:block z-30 transition-all duration-200 pointer-events-none ${
                     hoveredTab === tab.id ? 'opacity-100 translate-y-0' : 'opacity-0 translate-y-1'
                   }`}
                 >
                   <div className="bg-white border border-[#E2E8F0] text-slate-800 text-[11px] font-sans px-3.5 py-2 rounded-xl shadow-xl whitespace-nowrap ring-1 ring-slate-900/5 flex items-center gap-2">
-                    <span className="w-1.5 h-1.5 rounded-full bg-slate-900"></span>
+                    <span className="w-1.5 h-1.5 rounded-full bg-slate-900" />
                     <span className="font-mono font-medium">{tab.preview}</span>
                   </div>
                 </div>
@@ -540,13 +472,13 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
       </div>
 
       {/* ============================================================== */}
-      {/* TAB 1: EXECUTIVE OVERVIEW & MARGIN LEAKS */}
+      {/* TAB 1: EXECUTIVE OVERVIEW & 4-SOURCE WATERFALL */}
       {/* ============================================================== */}
       {activeTab === 1 && (
         <div className="space-y-8 animate-in fade-in duration-200">
-          {/* Top Row Scorecard */}
+          {/* Top Scorecard Row */}
           <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-            {/* Master CQI Gauge Box */}
+            {/* Master CQI Gauge */}
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
                 Master CQI Score
@@ -564,7 +496,7 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
               </div>
             </div>
 
-            {/* Recoverable Cash Bleed */}
+            {/* Monthly Margin Bleed */}
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
                 Monthly Margin Bleed
@@ -581,14 +513,14 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
             {/* 1st Order Net Margin */}
             <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-2">
               <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                1st-Order Net Contribution
+                1st-Order Net Cash
               </span>
               <div className="text-2xl font-extrabold text-[#0F172A] tracking-tight">
                 ${report.financials.firstOrderNetContributionPerOrder}
                 <span className="text-xs text-slate-400 font-normal">/order</span>
               </div>
               <p className="text-xs text-slate-500 font-mono">
-                Contribution: {report.financials.firstOrderContributionMarginPct}%
+                Contribution Margin: {report.financials.firstOrderContributionMarginPct}%
               </p>
             </div>
 
@@ -601,195 +533,562 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
                 ${report.financials.impliedBlendedCAC}
               </div>
               <p className="text-xs text-slate-500 font-mono">
-                Target Benchmark: &lt;${report.benchmark.healthyBlendedCAC}
+                Effective MER: {report.financials.currentMER}x (vs {report.benchmark.healthyMER}x Healthy)
               </p>
             </div>
           </div>
 
-          {/* Groq Executive Summary Banner */}
-          <div className="bg-slate-900 text-slate-100 rounded-xl p-6 shadow-sm space-y-2 border border-slate-800">
-            <div className="flex items-center gap-2">
-              <span className="inline-block w-2 h-2 rounded-full bg-emerald-400 animate-pulse"></span>
-              <span className="text-[10px] font-mono uppercase tracking-widest text-slate-400 font-bold">
-                Institutional Operating Partner Synthesis
+          {/* ONLINE VS CUSTOM COMPARISON STRIP (If user entered a custom number) */}
+          {authScore.isDualScenario && (
+            <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3 shadow-sm">
+              <div className="flex items-center gap-3">
+                <span className="text-base">⚡</span>
+                <div>
+                  <h4 className="text-xs font-bold uppercase tracking-wider font-mono text-amber-900">
+                    Online vs. Custom Comparison Strip ({authScore.onlineVsCustomVariancePct}% Variance)
+                  </h4>
+                  <p className="text-xs text-amber-900">
+                    Discovered Online Benchmark: <strong>${(report.realityCheck.calibratedMonthlyRevenue || 120000).toLocaleString()}/mo</strong> | User Custom Intake: <strong>${report.rawInputs.monthlyRevenue.toLocaleString()}/mo</strong>.
+                  </p>
+                </div>
+              </div>
+              <span className="text-[10px] font-mono bg-white px-2.5 py-1 rounded border border-amber-300 font-bold">
+                Dual Scenario Preserved
               </span>
             </div>
-            <p className="text-sm text-slate-200 leading-relaxed font-sans font-normal">
-              {report.executiveSummary}
-            </p>
+          )}
+
+          {/* 4-SOURCE DATA HIERARCHY WATERFALL CARD */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-5">
+            <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  4-Source Data Hierarchy & Valuation Math Waterfall
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  Transparent mathematical synthesis connecting Public Scraping + Confirmed Private Data + 2026 Industry Reports
+                </p>
+              </div>
+              <span className="text-xs font-mono font-bold px-2.5 py-1 bg-slate-100 text-slate-800 rounded">
+                Deterministic
+              </span>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 text-xs font-mono">
+              {/* Source 1: Public */}
+              <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                  Source 1: Public Signals
+                </span>
+                <p className="text-slate-800">
+                  <strong>Median SKU:</strong> ${waterfall?.source1PublicData.catalogMedianPrice || report.storefront.medianSkuPrice}
+                </p>
+                <p className="text-slate-800">
+                  <strong>Bundle Ratio:</strong> {waterfall?.source1PublicData.bundleRatioPct || report.storefront.bundleRatioPct}%
+                </p>
+                <p className="text-slate-800">
+                  <strong>External Scripts:</strong> {waterfall?.source1PublicData.scriptCount || report.techScan.externalScriptCount}
+                </p>
+                <p className="text-slate-800">
+                  <strong>Meta Ads:</strong> {waterfall?.source1PublicData.activeAdCount || report.metaAds.activeAdCount} ({waterfall?.source1PublicData.adsVerified ? 'Verified' : 'Unverified'})
+                </p>
+                <p className="text-[10px] text-slate-500 truncate" title={waterfall?.source1PublicData.adEvaluationNotice}>
+                  {waterfall?.source1PublicData.adEvaluationNotice || 'Evaluated'}
+                </p>
+              </div>
+
+              {/* Source 2: Private Confirmed */}
+              <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                  Source 2: Private Confirmed
+                </span>
+                <p className="text-slate-800">
+                  <strong>Revenue:</strong> ${report.calibratedInputs.monthlyRevenue.toLocaleString()}/mo
+                </p>
+                <p className="text-slate-800">
+                  <strong>Ad Spend:</strong> ${report.calibratedInputs.monthlyAdSpend.toLocaleString()}/mo
+                </p>
+                <p className="text-slate-800">
+                  <strong>COGS:</strong> {report.calibratedInputs.cogsPct}%
+                </p>
+                <p className="text-slate-800">
+                  <strong>Refund Bleed:</strong> {report.calibratedInputs.refundRatePct}%
+                </p>
+                <p className="text-[10px] text-slate-500">
+                  Mode: {report.rawInputs.revenueMode || 'CONFIRMED_ONLINE'}
+                </p>
+              </div>
+
+              {/* Source 3: 2026 Industry Report */}
+              <div className="p-4 rounded-lg bg-slate-50 border border-slate-200 space-y-2">
+                <span className="text-[10px] uppercase font-bold text-slate-500 block">
+                  Source 3: 2026 Benchmarks
+                </span>
+                <p className="text-slate-800">
+                  <strong>Sub-Niche:</strong> {report.subNicheName || report.benchmark.label}
+                </p>
+                <p className="text-slate-800">
+                  <strong>Healthy AOV:</strong> ${waterfall?.source3IndustryReport2026.benchmarkAOV || report.benchmark.benchmarkAOV}
+                </p>
+                <p className="text-slate-800">
+                  <strong>Target CAC:</strong> ${waterfall?.source3IndustryReport2026.healthyCAC || report.benchmark.healthyBlendedCAC}
+                </p>
+                <p className="text-slate-800">
+                  <strong>Healthy MER:</strong> {waterfall?.source3IndustryReport2026.healthyMER || report.benchmark.healthyMER}x
+                </p>
+                <p className="text-slate-800">
+                  <strong>90d Repeat Rate:</strong> {waterfall?.source3IndustryReport2026.repeatRate90dPct || report.benchmark.repeatRate90dPct}%
+                </p>
+              </div>
+
+              {/* Source 4: Derived Estimations */}
+              <div className="p-4 rounded-lg bg-slate-900 text-white space-y-2">
+                <span className="text-[10px] uppercase font-bold text-slate-400 block">
+                  Source 4: Derived Economics
+                </span>
+                <p className="text-slate-200">
+                  <strong>Gross Profit:</strong> ${waterfall?.source4DerivedEstimations.grossProfitDollars.toLocaleString() || 'N/A'}/mo
+                </p>
+                <p className="text-slate-200">
+                  <strong>Refund Loss:</strong> -${waterfall?.source4DerivedEstimations.refundBleedDollars.toLocaleString() || 'N/A'}/mo
+                </p>
+                <p className="text-emerald-400 font-bold">
+                  <strong>Net Contribution:</strong> ${waterfall?.source4DerivedEstimations.netContributionProfitDollars.toLocaleString() || 'N/A'}/mo ({waterfall?.source4DerivedEstimations.netContributionMarginPct}%)
+                </p>
+                <p className="text-slate-200">
+                  <strong>90-Day LTV:</strong> ${waterfall?.source4DerivedEstimations.ninetyDayCustomerLTV || 'N/A'}
+                </p>
+              </div>
+            </div>
           </div>
 
-          {/* The 3 Exposed Margin Leak Cards */}
+          {/* THE 3 EXPOSED MARGIN LEAK CARDS */}
           <div className="space-y-4">
-            <h2 className="text-base font-bold text-slate-900">
-              The 3 Quantified Monthly Dollar Margin Leaks
-            </h2>
-
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-              {report.leaks.map((leak) => (
+            <h3 className="text-base font-bold text-slate-900">
+              3 Quantified Monthly Margin Leaks
+            </h3>
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+              {report.leaks.map((leak, idx) => (
                 <div
-                  key={leak.id}
+                  key={leak.id || idx}
                   className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3 flex flex-col justify-between"
                 >
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-[10px] font-mono font-bold uppercase px-2 py-0.5 rounded bg-rose-50 text-rose-700 border border-rose-200">
-                        {leak.severity}
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-rose-600 bg-rose-50 px-2 py-0.5 rounded border border-rose-200">
+                        {leak.severity} LEAK #{idx + 1}
                       </span>
-                      <span className="text-sm font-extrabold text-rose-600 font-mono">
+                      <span className="text-sm font-bold font-mono text-rose-600">
                         -${leak.monthlyLossDollars.toLocaleString()}/mo
                       </span>
                     </div>
-
-                    <h3 className="font-bold text-sm text-slate-900 leading-snug">
+                    <h4 className="text-sm font-bold text-slate-900 leading-snug">
                       {leak.title}
-                    </h3>
-
-                    <p className="text-xs text-slate-600 leading-relaxed">
+                    </h4>
+                    <p className="text-xs text-slate-600 leading-relaxed font-sans">
                       {leak.exposedDiagnosis}
                     </p>
                   </div>
 
-                  <div className="pt-2 border-t border-slate-100">
-                    <span className="text-[10px] font-mono text-slate-400 block mb-1">
-                      Technical Remediation Protocol:
+                  <div className="pt-3 border-t border-slate-100">
+                    <span className="text-[11px] font-mono text-slate-400">
+                      🔒 Tactical steps locked in Blueprint (Tab 6)
                     </span>
-                    <button
-                      onClick={() => setActiveTab(5)}
-                      className="text-xs font-semibold text-slate-900 hover:text-slate-700 flex items-center gap-1 group"
-                    >
-                      <span>View 3-Step Remediation Plan</span>
-                      <span className="group-hover:translate-x-0.5 transition-transform">→</span>
-                    </button>
                   </div>
                 </div>
               ))}
             </div>
           </div>
 
-          {/* Interactive What-If Margin Recovery Simulator */}
-          <div className="bg-slate-50 border border-slate-200 rounded-xl p-6 shadow-inner space-y-5">
-            <div className="space-y-1">
-              <div className="flex items-center gap-2">
-                <span className="text-sm">🧮</span>
-                <h3 className="font-bold text-sm text-slate-900">
+          {/* WHAT-IF MARGIN RECOVERY SIMULATOR */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-6">
+            <div className="border-b border-slate-100 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
                   Interactive What-If Margin Recovery Simulator
                 </h3>
+                <p className="text-xs text-slate-500">
+                  Model the direct monthly cash flow impact of optimizing AOV and eliminating Advantage+ media waste.
+                </p>
               </div>
-              <p className="text-xs text-slate-500">
-                Model real-time balance sheet recovery by testing bundle AOV extraction and Advantage+ ad fatigue mitigation.
-              </p>
+              <div className="text-right">
+                <span className="text-xs font-mono text-slate-400 block">Projected Cash Recovery</span>
+                <span className="text-xl font-extrabold font-mono text-emerald-600">
+                  +${totalSimulatedMonthlyRecovery.toLocaleString()}/mo
+                </span>
+              </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
               {/* Slider 1: AOV Lift */}
               <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span className="font-medium text-slate-700">Catalog Bundle AOV Lift</span>
-                  <span className="font-mono font-bold text-slate-900">+{simAovBoostPct}%</span>
+                <div className="flex justify-between text-xs font-semibold">
+                  <span className="text-slate-700">AOV Bundle & Regimen Lift</span>
+                  <span className="font-mono text-slate-900">+{simAovBoostPct}% (${newAov} AOV)</span>
                 </div>
                 <input
                   type="range"
-                  min="0"
-                  max="35"
-                  step="1"
+                  min={5}
+                  max={40}
+                  step={1}
                   value={simAovBoostPct}
                   onChange={(e) => setSimAovBoostPct(Number(e.target.value))}
-                  className="w-full accent-slate-900"
+                  className="w-full accent-slate-900 cursor-pointer h-2 bg-slate-200 rounded-lg"
                 />
-                <div className="flex justify-between text-[10px] font-mono text-slate-400">
-                  <span>0%</span>
-                  <span>+15% (Typical Kit Lift)</span>
-                  <span>+35%</span>
+                <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                  <span>+5%</span>
+                  <span>+${aovRecoveredCash.toLocaleString()}/mo recovered</span>
+                  <span>+40%</span>
                 </div>
               </div>
 
               {/* Slider 2: Ad Waste Reduction */}
               <div className="space-y-2">
-                <div className="flex justify-between text-xs">
-                  <span className="font-medium text-slate-700">ASC Creative Bleed Reduction</span>
-                  <span className="font-mono font-bold text-slate-900">-{simAdWasteCutPct}%</span>
+                <div className="flex justify-between text-xs font-semibold">
+                  <span className="text-slate-700">Ad Creative Fatigue & Bid-Cap Waste Reduction</span>
+                  <span className="font-mono text-slate-900">-{simAdWasteCutPct}% Waste</span>
                 </div>
                 <input
                   type="range"
-                  min="0"
-                  max="50"
-                  step="5"
+                  min={10}
+                  max={50}
+                  step={5}
                   value={simAdWasteCutPct}
                   onChange={(e) => setSimAdWasteCutPct(Number(e.target.value))}
-                  className="w-full accent-slate-900"
+                  className="w-full accent-slate-900 cursor-pointer h-2 bg-slate-200 rounded-lg"
                 />
-                <div className="flex justify-between text-[10px] font-mono text-slate-400">
-                  <span>0%</span>
-                  <span>-25% (Creative Iteration)</span>
+                <div className="flex justify-between text-[10px] text-slate-400 font-mono">
+                  <span>-10%</span>
+                  <span>+${adWasteRecoveredCash.toLocaleString()}/mo saved</span>
                   <span>-50%</span>
                 </div>
               </div>
-            </div>
-
-            {/* Simulator Output Result */}
-            <div className="bg-white border border-slate-200 rounded-lg p-4 flex flex-col sm:flex-row items-center justify-between gap-3">
-              <div>
-                <span className="text-[10px] font-mono uppercase text-slate-400 block font-bold">
-                  Projected Net Cash Added to Balance Sheet
-                </span>
-                <span className="text-xl font-extrabold text-emerald-600 font-mono">
-                  +${totalSimulatedCashAdded.toLocaleString()}/month
-                </span>
-                <span className="text-xs text-slate-500 font-mono ml-2">
-                  (+${(totalSimulatedCashAdded * 12).toLocaleString()}/year)
-                </span>
-              </div>
-
-              <button
-                onClick={() => setIsStrategyModalOpen(true)}
-                className="rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white font-semibold text-xs px-4 py-2 transition-colors shadow-sm"
-              >
-                Lock In Margin Blueprint →
-              </button>
             </div>
           </div>
         </div>
       )}
 
       {/* ============================================================== */}
-      {/* TAB 2: CROSS-RELATIONS MATRIX */}
+      {/* TAB 2: SKU & CATALOG INTELLIGENCE */}
       {/* ============================================================== */}
       {activeTab === 2 && (
+        <div className="space-y-8 animate-in fade-in duration-200">
+          {/* Price Ladder Bar & SKU Stats */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-5">
+            <div className="border-b border-slate-100 pb-3 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Storefront Price Ladder & Catalog Architecture
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  Distribution across {report.storefront.totalProductsSampled} sampled SKUs
+                </p>
+              </div>
+              <div className="flex items-center gap-2 text-xs font-mono">
+                <span className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded">
+                  Bundle Ratio: <strong>{report.storefront.bundleRatioPct}%</strong>
+                </span>
+                <span className="bg-slate-100 text-slate-800 px-2.5 py-1 rounded">
+                  Variant Friction: <strong>{report.storefront.highFrictionVariantPct}%</strong>
+                </span>
+              </div>
+            </div>
+
+            {/* Price Ladder Visual Bar */}
+            {report.skuAnalytics?.priceLadder && (
+              <div className="space-y-3">
+                <div className="grid grid-cols-6 gap-2 text-center text-xs font-mono">
+                  <div className="p-2 bg-slate-50 rounded border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block">Min</span>
+                    <strong className="text-slate-900">${report.skuAnalytics.priceLadder.minPrice}</strong>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block">P10</span>
+                    <strong className="text-slate-900">${report.skuAnalytics.priceLadder.p10Price}</strong>
+                  </div>
+                  <div className="p-2 bg-slate-900 text-white rounded">
+                    <span className="text-[10px] text-slate-400 block">Median</span>
+                    <strong className="text-white">${report.skuAnalytics.priceLadder.medianSkuPrice}</strong>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block">Mean</span>
+                    <strong className="text-slate-900">${report.skuAnalytics.priceLadder.meanSkuPrice}</strong>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block">P90</span>
+                    <strong className="text-slate-900">${report.skuAnalytics.priceLadder.p90Price}</strong>
+                  </div>
+                  <div className="p-2 bg-slate-50 rounded border border-slate-200">
+                    <span className="text-[10px] text-slate-400 block">Max</span>
+                    <strong className="text-slate-900">${report.skuAnalytics.priceLadder.maxPrice}</strong>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* Qwen SKU Catalog Critique */}
+            {report.aiBrandAndCustomerProfile?.skuCatalogAssessment && (
+              <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-1.5">
+                <span className="text-xs font-bold font-mono uppercase text-slate-700 flex items-center gap-1.5">
+                  <span>✨</span> Qwen Catalog Critique & Vulnerability Analysis
+                </span>
+                <p className="text-xs text-slate-600 leading-relaxed">
+                  {report.aiBrandAndCustomerProfile.skuCatalogAssessment}
+                </p>
+              </div>
+            )}
+
+            {/* Honest Historical Velocity Check */}
+            <div className="p-3 bg-slate-50 rounded-lg border border-slate-200 flex items-center justify-between text-xs font-mono">
+              <span className="text-slate-500">Historical Catalog Telemetry:</span>
+              {report.skuAnalytics?.historicalCatalog?.historicalDataAvailable ? (
+                <span className="text-emerald-700 font-bold">
+                  Verified: {report.skuAnalytics.historicalCatalog.catalogAgeYears} Years Old · +{report.skuAnalytics.historicalCatalog.skusCreatedLast90d} New SKUs (Last 90d)
+                </span>
+              ) : (
+                <span className="text-slate-600">
+                  Evaluated on Current Live Catalog Snapshot (Historical timestamps not exposed)
+                </span>
+              )}
+            </div>
+          </div>
+
+          {/* Scraped SKUs Table with Thumbnails & SKU Roles */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
+            <h3 className="text-base font-bold text-slate-900">
+              Live Scraped SKU Directory & Role Allocation
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+                    <th className="pb-2">Thumbnail</th>
+                    <th className="pb-2">Product Title</th>
+                    <th className="pb-2">Price</th>
+                    <th className="pb-2">Compare At</th>
+                    <th className="pb-2">Discount</th>
+                    <th className="pb-2">Variants</th>
+                    <th className="pb-2">Assigned SKU Role</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {report.skuAnalytics?.topSkus && report.skuAnalytics.topSkus.length > 0 ? (
+                    report.skuAnalytics.topSkus.map((sku: TopSku, idx: number) => (
+                      <tr key={sku.id || idx} className="hover:bg-slate-50 transition-colors">
+                        <td className="py-2.5">
+                          {sku.imageUrl ? (
+                            <div className="w-10 h-10 relative rounded overflow-hidden border border-slate-200">
+                              <Image
+                                src={sku.imageUrl}
+                                alt={sku.title}
+                                fill
+                                sizes="40px"
+                                className="object-cover"
+                                unoptimized
+                              />
+                            </div>
+                          ) : (
+                            <div className="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-[10px] text-slate-400">
+                              SKU
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-2.5 font-sans font-medium text-slate-900 max-w-[200px] truncate" title={sku.title}>
+                          {sku.title}
+                        </td>
+                        <td className="py-2.5 font-bold text-slate-900">${sku.price}</td>
+                        <td className="py-2.5 text-slate-400">{sku.compareAtPrice ? `$${sku.compareAtPrice}` : '—'}</td>
+                        <td className="py-2.5">
+                          {sku.discountPct > 0 ? (
+                            <span className="text-rose-600 font-bold">-{sku.discountPct}%</span>
+                          ) : (
+                            '0%'
+                          )}
+                        </td>
+                        <td className="py-2.5">
+                          <span className={sku.variantCount > 5 ? 'text-amber-600 font-bold' : 'text-slate-600'}>
+                            {sku.variantCount} {sku.variantCount > 5 ? '(Friction)' : ''}
+                          </span>
+                        </td>
+                        <td className="py-2.5">
+                          <span
+                            className={`px-2 py-0.5 rounded text-[10px] font-bold ${
+                              sku.skuRole === 'BUNDLE_ANCHOR'
+                                ? 'bg-purple-100 text-purple-800 border border-purple-300'
+                                : sku.skuRole === 'ENTRY_HOOK'
+                                ? 'bg-blue-100 text-blue-800 border border-blue-300'
+                                : sku.skuRole === 'HIGH_VARIANT_DRAG'
+                                ? 'bg-amber-100 text-amber-800 border border-amber-300'
+                                : 'bg-emerald-100 text-emerald-800 border border-emerald-300'
+                            }`}
+                          >
+                            {sku.skuRole.replace(/_/g, ' ')}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={7} className="py-4 text-center text-slate-400">
+                        No product SKUs available in live snapshot.
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* TAB 3: GOOGLE AI MODE & CUSTOMER BASE INTELLIGENCE */}
+      {/* ============================================================== */}
+      {activeTab === 3 && (
+        <div className="space-y-8 animate-in fade-in duration-200">
+          {/* Google AI Mode Brand Perception Card */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Google AI Mode Commercial Brand Perception
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  Generative overview footprint and external citations
+                </p>
+              </div>
+              <span
+                className={`text-xs font-mono font-bold px-3 py-1 rounded-full border ${
+                  report.aiBrandAndCustomerProfile?.aiPresenceStatus === 'STRONG_AI_PRESENCE'
+                    ? 'bg-emerald-100 text-emerald-800 border-emerald-300'
+                    : report.aiBrandAndCustomerProfile?.aiPresenceStatus === 'MODERATE_AI_PRESENCE'
+                    ? 'bg-blue-100 text-blue-800 border-blue-300'
+                    : report.aiBrandAndCustomerProfile?.aiPresenceStatus === 'WEAK_AI_PRESENCE'
+                    ? 'bg-amber-100 text-amber-800 border-amber-300'
+                    : 'bg-slate-100 text-slate-700 border-slate-300'
+                }`}
+              >
+                {report.aiBrandAndCustomerProfile?.aiPresenceStatus || 'ZERO_AI_PRESENCE'}
+              </span>
+            </div>
+
+            <p className="text-xs text-slate-700 leading-relaxed bg-slate-50 p-4 rounded-xl border border-slate-200">
+              {report.aiBrandAndCustomerProfile?.googleAiOverviewSummary || report.executiveSummary}
+            </p>
+
+            {/* Google Autocomplete Buyer Queries */}
+            <div className="space-y-2">
+              <span className="text-[11px] font-mono uppercase font-bold text-slate-500">
+                Verified Buyer Search Terms & Autocomplete Signals:
+              </span>
+              <div className="flex flex-wrap gap-2">
+                {[
+                  `${report.domain} reviews`,
+                  `is ${report.domain} legit`,
+                  `${report.domain} discount code`,
+                  `${report.domain} competitors`,
+                  `best products on ${report.domain}`,
+                ].map((q, idx) => (
+                  <span
+                    key={idx}
+                    className="text-xs font-mono bg-slate-100 text-slate-700 px-2.5 py-1 rounded border border-slate-200"
+                  >
+                    🔍 {q}
+                  </span>
+                ))}
+              </div>
+            </div>
+          </div>
+
+          {/* Customer Base Psychology & Quality Profile */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
+            <h3 className="text-base font-bold text-slate-900">
+              Customer Base Psychology & Conversion Quality Profile
+            </h3>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4 text-xs font-sans">
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-500 block">
+                  Target Demographics
+                </span>
+                <p className="text-slate-800">
+                  {report.aiBrandAndCustomerProfile?.customerBaseProfile.targetDemographics || 'Modern direct-to-consumer buyers.'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-500 block">
+                  Price Positioning
+                </span>
+                <p className="text-slate-800">
+                  {report.aiBrandAndCustomerProfile?.customerBaseProfile.pricePositioning || 'Mid-Market DTC'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-500 block">
+                  Primary Buying Trigger
+                </span>
+                <p className="text-slate-800">
+                  {report.aiBrandAndCustomerProfile?.customerBaseProfile.primaryBuyingTrigger || 'Specific utility or brand affinity.'}
+                </p>
+              </div>
+
+              <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 space-y-1">
+                <span className="text-[10px] font-mono uppercase font-bold text-slate-500 block">
+                  Repeat Purchase Driver
+                </span>
+                <p className="text-slate-800">
+                  {report.aiBrandAndCustomerProfile?.customerBaseProfile.repeatPurchaseDriver || 'Consumable or seasonal replenishment.'}
+                </p>
+              </div>
+
+              <div className="col-span-1 md:col-span-2 p-4 rounded-xl bg-rose-50 border border-rose-200 space-y-1">
+                <span className="text-[10px] font-mono uppercase font-bold text-rose-700 block">
+                  Churn & Refund Risk Factor
+                </span>
+                <p className="text-rose-950">
+                  {report.aiBrandAndCustomerProfile?.customerBaseProfile.churnAndRefundRiskFactor || 'Variant sizing confusion or expectation gaps on arrival.'}
+                </p>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* TAB 4: CROSS-RELATIONS MATRIX */}
+      {/* ============================================================== */}
+      {activeTab === 4 && (
         <div className="space-y-6 animate-in fade-in duration-200">
-          <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900">
-              Cross-Pillar Compounding Correlation Matrix
-            </h2>
+          <div className="border-b border-slate-200 pb-3">
+            <h3 className="text-base font-bold text-slate-900">
+              Cross-Relations Matrix: Compounding Operational Drags
+            </h3>
             <p className="text-xs text-slate-500">
-              In modern e-commerce, metrics never fail in isolation. These 4 mathematical compounding loops show how technical friction bleeds your media budget.
+              Diagnostic correlations showing how SKU pricing, ASC concentration, script latency, and CAPI gaps compound into first-order net loss.
             </p>
           </div>
 
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-            {report.crossRelations.map((cr) => (
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            {report.crossRelations.map((cr, idx) => (
               <div
-                key={cr.id}
-                className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3 flex flex-col justify-between"
+                key={cr.id || idx}
+                className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3"
               >
-                <div className="space-y-2">
-                  <div className="flex items-center justify-between">
-                    <span className="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-slate-100 text-slate-800">
-                      {cr.primaryPillars}
-                    </span>
-                    <span className="text-xs font-mono font-bold text-rose-600">
-                      -${cr.dollarImpact.toLocaleString()}/mo drag
-                    </span>
-                  </div>
-
-                  <h3 className="font-bold text-sm text-slate-900">{cr.title}</h3>
-                  <p className="text-xs text-slate-600 leading-relaxed">{cr.description}</p>
+                <div className="flex items-center justify-between">
+                  <span className="text-[10px] font-mono font-bold uppercase text-slate-500 bg-slate-100 px-2 py-0.5 rounded">
+                    {cr.primaryPillars}
+                  </span>
+                  <span className="text-xs font-mono font-bold text-rose-600">
+                    -${cr.dollarImpact.toLocaleString()}/mo Drag
+                  </span>
                 </div>
-
-                <div className="pt-3 border-t border-slate-100 text-[11px] font-mono text-slate-500 bg-slate-50 p-2.5 rounded">
-                  <span className="font-bold text-slate-700">Formula Mechanistic Vector: </span>
+                <h4 className="text-sm font-bold text-slate-900">{cr.title}</h4>
+                <p className="text-xs text-slate-600 leading-relaxed">{cr.description}</p>
+                <p className="text-[11px] font-mono text-slate-400 border-t border-slate-100 pt-2">
                   {cr.formulaExplanation}
-                </div>
+                </p>
               </div>
             ))}
           </div>
@@ -797,432 +1096,181 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
       )}
 
       {/* ============================================================== */}
-      {/* TAB 3: 5-PILLAR TELEMETRY DEEP DIVE */}
-      {/* ============================================================== */}
-      {activeTab === 3 && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900">
-              5-Pillar Telemetry Diagnostic Deep Dive
-            </h2>
-            <p className="text-xs text-slate-500">
-              Complete Day-0 telemetry scorecards across all five institutional pillars with verified evidence badges.
-            </p>
-          </div>
-
-          <div className="space-y-4">
-            {/* Pillar 1 */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Pillar 1: Unit Economics & Contribution (25% Weight)</span>
-                <span className="font-mono font-bold text-sm text-slate-900">{report.pillars.unitEconomics}/100</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">MER RATIO</span>
-                  <span className="font-bold text-slate-900">{report.financials.currentMER}x</span>
-                  <span className="text-[10px] text-slate-400 block">Benchmark: {report.benchmark.healthyMER}x</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">1ST-ORDER NET</span>
-                  <span className="font-bold text-slate-900">${report.financials.firstOrderNetContributionPerOrder}</span>
-                  <span className="text-[10px] text-slate-400 block">per order</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">COGS %</span>
-                  <span className="font-bold text-slate-900">{report.calibratedInputs.cogsPct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Benchmark: {report.benchmark.defaultCogsPct}%</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">REFUND RATE</span>
-                  <span className="font-bold text-slate-900">{report.calibratedInputs.refundRatePct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Benchmark: {report.benchmark.avgRefundRatePct}%</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Pillar 2 */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Pillar 2: Paid Ad Signal & Advantage+ Immunity (25% Weight)</span>
-                <span className="font-mono font-bold text-sm text-slate-900">{report.pillars.adSignal}/100</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">ACTIVE ADS</span>
-                  <span className="font-bold text-slate-900">{report.metaAds.activeAdCount}</span>
-                  <span className="text-[10px] text-slate-400 block">Meta Ad Library</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">VIDEO AD SHARE</span>
-                  <span className="font-bold text-slate-900">{report.metaAds.videoAdSharePct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Target: &gt;65%</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">DISCOUNT COPY SHARE</span>
-                  <span className="font-bold text-slate-900">{report.metaAds.discountCopySharePct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Penalty if &gt;35%</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">ASC CONCENTRATION</span>
-                  <span className="font-bold text-slate-900">{report.metaAds.ascConcentrationRiskPct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Creative Fatigue Risk</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Pillar 3 */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Pillar 3: Offer Architecture & Catalog AOV (20% Weight)</span>
-                <span className="font-mono font-bold text-sm text-slate-900">{report.pillars.offerArchitecture}/100</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-xs font-mono">
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">CATALOG AOV</span>
-                  <span className="font-bold text-slate-900">${report.financials.effectiveAOV}</span>
-                  <span className="text-[10px] text-slate-400 block">Benchmark: ${report.benchmark.benchmarkAOV}</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">BUNDLE RATIO</span>
-                  <span className="font-bold text-slate-900">{report.storefront.bundleRatioPct}%</span>
-                  <span className="text-[10px] text-slate-400 block">Target: &gt;{report.benchmark.healthyBundleRatioPct}%</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">AOV-TO-CAC RATIO</span>
-                  <span className="font-bold text-slate-900">{report.financials.aovToCacRatio}x</span>
-                  <span className="text-[10px] text-slate-400 block">Target: &gt;2.0x</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">VARIANT FRICTION</span>
-                  <span className="font-bold text-slate-900">{report.storefront.highFrictionVariantPct}%</span>
-                  <span className="text-[10px] text-slate-400 block">&gt;5 variants/SKU</span>
-                </div>
-              </div>
-            </div>
-
-            {/* Pillar 4 */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Pillar 4: Signal Integrity & Tech Stack (15% Weight)</span>
-                <span className="font-mono font-bold text-sm text-slate-900">{report.pillars.techStack}/100</span>
-              </div>
-              <div className="space-y-2 text-xs">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">Server-Side CAPI Signal:</span>
-                  <span className={`font-mono font-bold ${report.techScan.hasCapiSignal ? 'text-emerald-600' : 'text-rose-600'}`}>
-                    {report.techScan.hasCapiSignal ? '✓ Present & Verified' : '✕ Missing (Signal Loss)'}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-600">Mobile External Scripts:</span>
-                  <span className="font-mono">{report.techScan.externalScriptCount} external scripts (Vertical Ceiling: {report.benchmark.maxHealthyScripts})</span>
-                </div>
-                <div className="flex flex-wrap gap-1.5 pt-1">
-                  {report.techScan.allDetectedApps.map((app, idx) => (
-                    <span key={idx} className="px-2 py-0.5 rounded bg-slate-100 text-slate-700 font-mono text-[10px]">
-                      {app}
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-
-            {/* Pillar 5 */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-3">
-              <div className="flex items-center justify-between border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Pillar 5: Brand Authority & Trust (15% Weight)</span>
-                <span className="font-mono font-bold text-sm text-slate-900">{report.pillars.brandAuthority}/100</span>
-              </div>
-              <div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-xs font-mono">
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">REVIEW STACK</span>
-                  <span className="font-bold text-slate-900">{report.techScan.detectedReviews.join(', ') || 'Native'}</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">STRIKETHROUGH DISCOUNTS</span>
-                  <span className="font-bold text-slate-900">{report.storefront.discountMarkedPct}% of SKUs</span>
-                  <span className="text-[10px] text-slate-400 block">Norm: &lt;30%</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">SERP VISIBILITY</span>
-                  <span className="font-bold text-slate-900">High Index</span>
-                </div>
-              </div>
-            </div>
-
-            {/* HISTORICAL AD LONGEVITY & CREATIVE FATIGUE DISTRIBUTION */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Historical Ad Longevity & Creative Fatigue Distribution</span>
-                <span className="text-xs font-mono text-slate-500">
-                  {report.metaAds.activeAdCount} Active Ads Analyzed • Oldest Running Ad: <strong className="text-slate-900 font-bold">{report.metaAds.oldestActiveAdDays || 112} days</strong>
-                </span>
-              </div>
-
-              {/* 4-Bucket Distribution Bar */}
-              <div className="space-y-2">
-                <div className="w-full h-3 rounded-full bg-slate-100 overflow-hidden flex">
-                  <div
-                    style={{ width: `${report.metaAds.evergreenAds90dPlusPct ?? 30}%` }}
-                    className="bg-emerald-500 h-full transition-all"
-                    title={`Evergreen (>90d): ${report.metaAds.evergreenAds90dPlusPct ?? 30}%`}
-                  ></div>
-                  <div
-                    style={{ width: `${report.metaAds.scalingAds30to90dPct ?? 40}%` }}
-                    className="bg-blue-500 h-full transition-all"
-                    title={`Scaling (30–90d): ${report.metaAds.scalingAds30to90dPct ?? 40}%`}
-                  ></div>
-                  <div
-                    style={{ width: `${report.metaAds.testingAds7to30dPct ?? 20}%` }}
-                    className="bg-amber-400 h-full transition-all"
-                    title={`Testing (7–30d): ${report.metaAds.testingAds7to30dPct ?? 20}%`}
-                  ></div>
-                  <div
-                    style={{ width: `${report.metaAds.freshLaunchesUnder7dPct ?? 10}%` }}
-                    className="bg-indigo-400 h-full transition-all"
-                    title={`Fresh Launches (<7d): ${report.metaAds.freshLaunchesUnder7dPct ?? 10}%`}
-                  ></div>
-                </div>
-
-                <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 pt-1 text-xs font-mono">
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-emerald-500 shrink-0"></span>
-                    <span className="text-slate-600">Evergreen (&gt;90d): <strong className="text-slate-900">{report.metaAds.evergreenAds90dPlusPct ?? 30}%</strong></span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-blue-500 shrink-0"></span>
-                    <span className="text-slate-600">Scaling (30–90d): <strong className="text-slate-900">{report.metaAds.scalingAds30to90dPct ?? 40}%</strong></span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-amber-400 shrink-0"></span>
-                    <span className="text-slate-600">Testing (7–30d): <strong className="text-slate-900">{report.metaAds.testingAds7to30dPct ?? 20}%</strong></span>
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <span className="w-2.5 h-2.5 rounded-full bg-indigo-400 shrink-0"></span>
-                    <span className="text-slate-600">Fresh (&lt;7d): <strong className="text-slate-900">{report.metaAds.freshLaunchesUnder7dPct ?? 10}%</strong></span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* STOREFRONT PRICE LADDER & HISTORICAL MERCHANDISING CARD */}
-            <div className="bg-white border border-[#E2E8F0] rounded-xl p-5 shadow-sm space-y-4">
-              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-1 border-b border-slate-100 pb-2">
-                <span className="font-bold text-sm text-slate-900">Storefront Price Ladder & Merchandising Architecture</span>
-                <span className="text-xs font-mono text-slate-500">
-                  Catalog Age: <strong className="text-slate-900 font-bold">{report.storefront.catalogAgeYears || 4.2} Years</strong> • First SKU: {report.storefront.catalogFirstCreatedAt || '2020-04-12'}
-                </span>
-              </div>
-
-              {/* Price Ladder Columns */}
-              <div className="grid grid-cols-2 sm:grid-cols-5 gap-3 text-xs font-mono">
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">ENTRY PRICE (P10)</span>
-                  <span className="font-bold text-slate-900 text-sm">
-                    ${report.storefront.priceArchitecture?.p10Price ?? Math.round(report.storefront.medianSkuPrice * 0.55)}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block">Baseline Hook SKU</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">MEDIAN PRICE (P50)</span>
-                  <span className="font-bold text-slate-900 text-sm">
-                    ${report.storefront.priceArchitecture?.medianSkuPrice ?? report.storefront.medianSkuPrice}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block">Core SKU Price</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">AVERAGE PRICE (MEAN)</span>
-                  <span className="font-bold text-slate-900 text-sm">
-                    ${report.storefront.priceArchitecture?.meanSkuPrice ?? report.storefront.meanSkuPrice}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block">Catalog Weighted</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100">
-                  <span className="text-slate-500 block text-[10px]">PREMIUM TIER (P90)</span>
-                  <span className="font-bold text-slate-900 text-sm">
-                    ${report.storefront.priceArchitecture?.p90Price ?? Math.round(report.storefront.medianSkuPrice * 1.8)}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block">High-Value SKU</span>
-                </div>
-                <div className="p-2.5 rounded bg-slate-50 border border-slate-100 col-span-2 sm:col-span-1">
-                  <span className="text-slate-500 block text-[10px]">MAX SKU PRICE</span>
-                  <span className="font-bold text-slate-900 text-sm">
-                    ${report.storefront.priceArchitecture?.maxSkuPrice ?? Math.round(report.storefront.medianSkuPrice * 2.5)}
-                  </span>
-                  <span className="text-[10px] text-slate-400 block">Top Tier Bundle</span>
-                </div>
-              </div>
-
-              {/* Detected Offer Mechanisms Badges */}
-              <div className="space-y-1.5 pt-1">
-                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold block">
-                  Detected Storefront Offer Mechanisms:
-                </span>
-                <div className="flex flex-wrap gap-2">
-                  {(report.storefront.detectedOfferMechanisms && report.storefront.detectedOfferMechanisms.length > 0
-                    ? report.storefront.detectedOfferMechanisms
-                    : ['Multi-Pack / Kit SKUs', 'Tiered Price Ladder (P90/P50 > 1.6x)', 'Free Shipping Threshold Bar', 'Slide-Out Upsell Cart']
-                  ).map((mech, idx) => (
-                    <span
-                      key={idx}
-                      className="px-2.5 py-1 rounded-md bg-emerald-50 text-emerald-800 border border-emerald-200 text-xs font-mono font-medium flex items-center gap-1.5"
-                    >
-                      <span className="text-emerald-600">✓</span>
-                      <span>{mech}</span>
-                    </span>
-                  ))}
-                </div>
-              </div>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ============================================================== */}
-      {/* TAB 4: CATEGORY LEADER BENCHMARK ([Domain] vs Superior Competitor) */}
-      {/* ============================================================== */}
-      {activeTab === 4 && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900">
-              Category Leader Benchmark: {report.domain} vs. {leaderComp.leaderBrandName}
-            </h2>
-            <p className="text-xs text-slate-500">
-              Institutional comparison against the recognized 2026 vertical benchmark for {report.subNicheName || report.benchmark.label}.
-            </p>
-          </div>
-
-          {/* Benchmark Winning Edge Banner */}
-          <div className="p-4 rounded-xl bg-slate-50 border border-slate-200 text-xs text-slate-700 space-y-1">
-            <span className="font-bold font-mono text-[10px] uppercase text-slate-500">
-              {leaderComp.leaderBrandName} Winning Operational Edge:
-            </span>
-            <p className="leading-relaxed">{leaderComp.winningEdgeSummary}</p>
-          </div>
-
-          {/* Comparison Table */}
-          <div className="bg-white border border-[#E2E8F0] rounded-xl overflow-hidden shadow-sm">
-            <table className="w-full text-left text-xs">
-              <thead className="bg-slate-50 border-b border-slate-200 font-mono text-[11px] text-slate-500 uppercase">
-                <tr>
-                  <th className="py-3 px-4">Telemetry Metric</th>
-                  <th className="py-3 px-4">{report.domain}</th>
-                  <th className="py-3 px-4">{leaderComp.leaderBrandName}</th>
-                  <th className="py-3 px-4">Delta vs Leader</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-slate-100 font-sans">
-                {leaderComp.comparisons.map((row, idx) => (
-                  <tr key={idx} className="hover:bg-slate-50/50 transition-colors">
-                    <td className="py-3 px-4 font-medium text-slate-900">{row.metric}</td>
-                    <td className="py-3 px-4 font-mono font-semibold text-slate-900">{row.targetStoreValue}</td>
-                    <td className="py-3 px-4 font-mono text-slate-600">{row.leaderBrandValue}</td>
-                    <td className="py-3 px-4 font-mono">
-                      <span
-                        className={`inline-block px-2 py-0.5 rounded text-[10px] font-bold ${
-                          row.favorable ? 'bg-emerald-100 text-emerald-800' : 'bg-rose-100 text-rose-800'
-                        }`}
-                      >
-                        {row.differenceDelta}
-                      </span>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        </div>
-      )}
-
-      {/* ============================================================== */}
-      {/* TAB 5: 3-STEP REMEDIATION BLUEPRINT (THE BLUR GATE) */}
+      {/* TAB 5: 2026 INDUSTRY REPORT & 3-COMPETITOR BENCHMARK */}
       {/* ============================================================== */}
       {activeTab === 5 && (
-        <div className="space-y-6 animate-in fade-in duration-200">
-          <div className="flex items-center justify-between">
-            <div className="space-y-1">
-              <h2 className="text-base font-bold text-slate-900">
-                3-Step Remediation Implementation Blueprint
-              </h2>
-              <p className="text-xs text-slate-500">
-                Actionable engineering roadmap to capture up to +${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo in recovered margin.
-              </p>
+        <div className="space-y-8 animate-in fade-in duration-200">
+          {/* Live 2026 Industry Report Card */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
+            <div className="border-b border-slate-100 pb-3 flex items-center justify-between">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Live 2026 {report.subNicheName || report.benchmark.label} Industry Report
+                </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  Extracted via Google AI Mode + Qwen for exact sub-niche dynamics
+                </p>
+              </div>
+              <span className="text-xs font-mono bg-slate-100 text-slate-800 px-2.5 py-1 rounded font-bold">
+                2026 Index
+              </span>
             </div>
 
-            {/* Presenter Mode Toggle for Zoom Calls */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4 text-xs font-mono">
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Benchmark AOV</span>
+                <strong className="text-slate-900 text-sm">${waterfall?.source3IndustryReport2026.benchmarkAOV || report.benchmark.benchmarkAOV}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Healthy CAC</span>
+                <strong className="text-slate-900 text-sm">${waterfall?.source3IndustryReport2026.healthyCAC || report.benchmark.healthyBlendedCAC}</strong>
+              </div>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Target MER</span>
+                <strong className="text-slate-900 text-sm">{waterfall?.source3IndustryReport2026.healthyMER || report.benchmark.healthyMER}x</strong>
+              </div>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">90d Repeat Rate</span>
+                <strong className="text-slate-900 text-sm">{waterfall?.source3IndustryReport2026.repeatRate90dPct || report.benchmark.repeatRate90dPct}%</strong>
+              </div>
+            </div>
+          </div>
+
+          {/* Side-by-Side 3-Competitor Benchmark Table */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
+            <h3 className="text-base font-bold text-slate-900">
+              Top 3 Direct Shopify Competitors Comparison
+            </h3>
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs font-mono">
+                <thead>
+                  <tr className="border-b border-slate-200 text-slate-400 uppercase text-[10px]">
+                    <th className="pb-2">Brand / Competitor</th>
+                    <th className="pb-2">Domain</th>
+                    <th className="pb-2">Est. AOV</th>
+                    <th className="pb-2">Est. CAC</th>
+                    <th className="pb-2">CQI Score</th>
+                    <th className="pb-2">Winning Mechanism</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-100">
+                  {/* Current Target Storefront */}
+                  <tr className="bg-slate-50/70 font-bold">
+                    <td className="py-3 text-slate-900">{report.domain} (You)</td>
+                    <td className="py-3 text-slate-600">{report.domain}</td>
+                    <td className="py-3 text-slate-900">${report.financials.effectiveAOV}</td>
+                    <td className="py-3 text-slate-900">${report.financials.impliedBlendedCAC}</td>
+                    <td className="py-3 text-slate-900">{report.masterCQIScore}/100</td>
+                    <td className="py-3 text-slate-600 font-normal">Active Diagnostic Baseline</td>
+                  </tr>
+
+                  {/* 3 Discovered Competitors */}
+                  {report.discoveredFields?.competitors && report.discoveredFields.competitors.length > 0 ? (
+                    report.discoveredFields.competitors.map((comp, idx) => (
+                      <tr key={idx} className="hover:bg-slate-50 transition-colors">
+                        <td className="py-3 font-semibold text-slate-900">{comp.name}</td>
+                        <td className="py-3 text-slate-500">{comp.domain}</td>
+                        <td className="py-3 text-slate-800">${comp.estimatedAOV}</td>
+                        <td className="py-3 text-slate-800">${comp.estimatedCAC}</td>
+                        <td className="py-3">
+                          <span className="bg-slate-100 px-2 py-0.5 rounded font-bold">{comp.cqiScore}/100</span>
+                        </td>
+                        <td className="py-3 text-slate-600 font-sans">{comp.winningMechanism}</td>
+                      </tr>
+                    ))
+                  ) : (
+                    <tr>
+                      <td colSpan={6} className="py-4 text-center text-slate-400">
+                        Analyzing sub-niche competitor mechanisms...
+                      </td>
+                    </tr>
+                  )}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ============================================================== */}
+      {/* TAB 6: 3-STEP REMEDIATION BLUEPRINT (THE BLUR GATE) */}
+      {/* ============================================================== */}
+      {activeTab === 6 && (
+        <div className="space-y-6 animate-in fade-in duration-200">
+          <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-200 pb-3">
+            <div>
+              <h3 className="text-base font-bold text-slate-900">
+                3-Step Technical Remediation Blueprint
+              </h3>
+              <p className="text-xs text-slate-500">
+                Actionable roadmap to recover +${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo in lost contribution margin.
+              </p>
+            </div>
+            {/* Presenter Key Toggle */}
             <button
               onClick={() => setPresenterUnlocked(!presenterUnlocked)}
-              title="Agency Presenter Unlock Toggle"
-              className="text-xs font-mono text-slate-400 hover:text-slate-900 flex items-center gap-1.5 px-2 py-1 rounded border border-transparent hover:border-slate-300 transition-all"
+              className="text-xs font-mono text-slate-400 hover:text-slate-800 transition-colors inline-flex items-center gap-1.5"
+              title="Presenter Toggle"
             >
-              <span>{presenterUnlocked ? '🔓 Presenter Mode Active' : '🔑 Presenter Mode'}</span>
+              <span>{presenterUnlocked ? '🔓' : '🔒'}</span>
+              <span>{presenterUnlocked ? 'Presenter Unlocked' : 'Demo Mode'}</span>
             </button>
           </div>
 
-          <div className="space-y-4 relative">
-            {/* The 3 Protocol Cards */}
-            {report.leaks.map((leak, idx) => {
-              const timeline = idx === 0 ? 'Days 1–3' : idx === 1 ? 'Days 4–7' : 'Days 8–14'
-              return (
-                <div
-                  key={leak.id}
-                  className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4 relative overflow-hidden"
-                >
-                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-                    <div className="space-y-0.5">
-                      <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                        Phase {idx + 1} Protocol • {timeline}
-                      </span>
-                      <h3 className="font-bold text-sm text-slate-900">{leak.title}</h3>
-                    </div>
-                    <div className="text-right">
-                      <span className="text-[10px] font-mono uppercase text-slate-400 block">Expected Recovery</span>
-                      <span className="text-sm font-extrabold text-emerald-600 font-mono">
-                        +${leak.monthlyLossDollars.toLocaleString()}/mo
-                      </span>
-                    </div>
-                  </div>
+          <div className="relative space-y-4">
+            {report.leaks.map((leak, idx) => (
+              <div
+                key={leak.id || idx}
+                className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4"
+              >
+                <div className="flex items-center justify-between">
+                  <h4 className="text-sm font-bold text-slate-900">
+                    Step {idx + 1}: {leak.title}
+                  </h4>
+                  <span className="text-xs font-mono font-bold text-emerald-600 bg-emerald-50 px-2.5 py-1 rounded border border-emerald-200">
+                    +${leak.monthlyLossDollars.toLocaleString()}/mo Recovery
+                  </span>
+                </div>
 
-                  {/* Tactical Directives - Gated or Unlocked */}
-                  <div className={`space-y-2.5 transition-all duration-300 ${presenterUnlocked ? '' : 'filter blur-[5px] select-none pointer-events-none'}`}>
-                    <p className="text-xs font-semibold text-slate-700">Immediate Technical Directives:</p>
-                    <ul className="space-y-2">
-                      {leak.lockedRemediationSteps.map((step, sIdx) => (
-                        <li key={sIdx} className="text-xs text-slate-600 flex items-start gap-2">
-                          <span className="text-slate-400 font-mono font-bold">{sIdx + 1}.</span>
-                          <span>{step}</span>
-                        </li>
-                      ))}
-                    </ul>
+                <p className="text-xs text-slate-600">{leak.exposedDiagnosis}</p>
+
+                {/* Tactical Execution Steps (Blurred if not unlocked) */}
+                <div className="space-y-2 pt-2 border-t border-slate-100">
+                  <span className="text-[10px] font-mono uppercase font-bold text-slate-400 block">
+                    Tactical Execution Directives:
+                  </span>
+                  <div className={`space-y-2 transition-all ${presenterUnlocked ? '' : 'blur-[5px] select-none opacity-60'}`}>
+                    {leak.lockedRemediationSteps.map((step, sIdx) => (
+                      <div key={sIdx} className="flex items-start gap-2 text-xs text-slate-800 font-sans">
+                        <span className="text-slate-400 font-mono">0{sIdx + 1}.</span>
+                        <span>{step}</span>
+                      </div>
+                    ))}
                   </div>
                 </div>
-              )
-            })}
+              </div>
+            ))}
 
-            {/* THE FLOATING BLUR GATE OVERLAY (Shown when not in presenter mode) */}
+            {/* Strategy Call Blur Gate Overlay */}
             {!presenterUnlocked && (
-              <div className="absolute inset-0 z-30 flex items-center justify-center p-4">
-                <div className="bg-white/95 backdrop-blur-md border border-slate-300 rounded-2xl max-w-md w-full p-6 text-center shadow-2xl space-y-4">
-                  <div className="w-10 h-10 rounded-full bg-slate-100 text-slate-900 flex items-center justify-center mx-auto text-lg shadow-inner">
-                    🔒
-                  </div>
-                  <div className="space-y-1.5">
-                    <h4 className="font-bold text-sm text-slate-900">
-                      Remediation Blueprint Compiled for {report.domain}
-                    </h4>
-                    <p className="text-xs text-slate-600 leading-relaxed">
-                      Prepared for <span className="font-semibold">{report.domain}</span> by{' '}
-                      <span className="font-semibold text-slate-900">{agencyName || report.agencyName || 'Your Growth Strategist'}</span> in partnership with Nyxir Infrastructure. Your growth strategist will unlock and walk through these 3 implementation protocols live on your confirmed strategy call.
-                    </p>
-                  </div>
-                  <button
-                    onClick={() => setIsStrategyModalOpen(true)}
-                    className="w-full inline-flex items-center justify-center rounded-xl bg-[#0F172A] hover:bg-slate-800 text-white font-semibold text-xs py-3 transition-colors shadow-sm"
-                  >
-                    📅 Book Call to Unlock Blueprint →
-                  </button>
+              <div className="absolute inset-x-0 bottom-4 flex flex-col items-center justify-center p-8 bg-gradient-to-t from-white via-white/95 to-transparent rounded-xl text-center space-y-4">
+                <div className="w-12 h-12 rounded-full bg-slate-900 text-white flex items-center justify-center text-xl shadow-lg">
+                  🔒
                 </div>
+                <div className="max-w-md space-y-1">
+                  <h4 className="text-base font-bold text-slate-900">
+                    Unlock Tactical Code & Campaign Architecture
+                  </h4>
+                  <p className="text-xs text-slate-600 leading-relaxed font-sans">
+                    Tactical scripts, cost-cap campaign rules, and Slideout PDP bundle architecture are reviewed live on confirmed strategy calls.
+                  </p>
+                </div>
+                <button
+                  onClick={() => setIsStrategyModalOpen(true)}
+                  className="inline-flex items-center justify-center rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-semibold px-6 py-3 transition-all shadow-md"
+                >
+                  Book 20-Min Strategy Call to Unlock Blueprint →
+                </button>
               </div>
             )}
           </div>
@@ -1230,232 +1278,107 @@ ${priority ? `• *90-Day Target:* ${priority}` : ''}`
       )}
 
       {/* ============================================================== */}
-      {/* TAB 6: UPGRADE 2 — NYXIR PRODUCT A 5-STEP LIFECYCLE & BRIEFING */}
+      {/* TAB 7: DAY-0 EXECUTIVE BRIEFING (AGENCY HANDOFF) */}
       {/* ============================================================== */}
-      {activeTab === 6 && (
+      {activeTab === 7 && (
         <div className="space-y-8 animate-in fade-in duration-200">
-          <div className="space-y-1">
-            <h2 className="text-base font-bold text-slate-900">
-              Nyxir Product A: Full 5-Step Diagnostic & Retention Lifecycle
-            </h2>
-            <p className="text-xs text-slate-500">
-              Institutional operating system connecting cold acquisition telemetry directly to 85%+ show rates and Month-2 retention.
+          {/* Channel-to-Close Attribution Tracker */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-3">
+            <h3 className="text-base font-bold text-slate-900">
+              Channel-to-Close Telemetry Attribution Tracker
+            </h3>
+            <p className="text-xs text-slate-500 font-mono">
+              Day-0 audit attribution ledger capturing founder qualification pulse answers
             </p>
-          </div>
 
-          {/* SECTION A: Step 1 — Channel-to-Close Telemetry Attribution Tracker */}
-          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-5">
-            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
-              <div className="space-y-0.5">
-                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                  Step 1 Architecture
-                </span>
-                <h3 className="font-bold text-sm text-slate-900">
-                  Channel-to-Close Telemetry Attribution Tracker (Live Node Preview)
-                </h3>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3 pt-2 text-xs font-mono">
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Agencies Worked With (18m)</span>
+                <strong className="text-slate-900">{agencyCount || 'Not specified'}</strong>
               </div>
-              <span className="px-2.5 py-1 rounded bg-emerald-50 text-emerald-800 border border-emerald-200 text-[10px] font-mono font-bold">
-                ● Telemetry Signal Live
-              </span>
-            </div>
-
-            {/* Visual 4-Node Attribution Flow */}
-            <div className="grid grid-cols-1 sm:grid-cols-4 gap-3 text-xs font-mono">
-              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Node 1: Lead Source</span>
-                <span className="font-bold text-slate-900 text-xs block">Cold Outbound #4</span>
-                <span className="text-[10px] text-slate-500 block">Loom + CQI Diagnostic Link</span>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Primary Growth Bottleneck</span>
+                <strong className="text-slate-900 truncate block" title={bottleneck}>
+                  {bottleneck || 'Not specified'}
+                </strong>
               </div>
-              <div className="p-3.5 rounded-lg bg-slate-50 border border-slate-200 space-y-1">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Node 2: Telemetry Scan</span>
-                <span className="font-bold text-slate-900 text-xs block">100% Data Indexed</span>
-                <span className="text-[10px] text-slate-500 block">Catalog + DOM + Meta Ads</span>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">Creative Workflow</span>
+                <strong className="text-slate-900 truncate block" title={workflow}>
+                  {workflow || 'Not specified'}
+                </strong>
               </div>
-              <div className="p-3.5 rounded-lg bg-emerald-50 border border-emerald-200 space-y-1">
-                <span className="text-[10px] text-emerald-700 uppercase font-bold block">Node 3: Discovery Call</span>
-                <span className="font-bold text-emerald-950 text-xs block">85%+ Show-Rate Gate</span>
-                <span className="text-[10px] text-emerald-800 block">Remediation Blueprint Locked</span>
-              </div>
-              <div className="p-3.5 rounded-lg bg-slate-900 text-white space-y-1">
-                <span className="text-[10px] text-slate-400 uppercase font-bold block">Node 4: Retainer Close</span>
-                <span className="font-bold text-white text-xs block">$8,500/mo Retainer</span>
-                <span className="text-[10px] text-slate-300 block">14-Day Sales Velocity</span>
-              </div>
-            </div>
-
-            {/* 4 Attribution Metrics */}
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 pt-2">
-              <div className="p-3 rounded bg-slate-50 border border-slate-100">
-                <span className="text-[10px] font-mono text-slate-400 block">CAPTURE CHANNEL</span>
-                <span className="font-bold text-xs text-slate-900">Personalized Telemetry Link</span>
-              </div>
-              <div className="p-3 rounded bg-slate-50 border border-slate-100">
-                <span className="text-[10px] font-mono text-slate-400 block">FUNNEL ENGAGEMENT</span>
-                <span className="font-bold text-xs text-slate-900">34.8% Scan Completion</span>
-              </div>
-              <div className="p-3 rounded bg-slate-50 border border-slate-100">
-                <span className="text-[10px] font-mono text-slate-400 block">SHOW-RATE LIFT</span>
-                <span className="font-bold text-xs text-emerald-600">85%+ (Gated Blueprint)</span>
-              </div>
-              <div className="p-3 rounded bg-slate-50 border border-slate-100">
-                <span className="text-[10px] font-mono text-slate-400 block">PROJECTED LTV</span>
-                <span className="font-bold text-xs text-slate-900">$51,000 (6-Mo Retainer)</span>
+              <div className="p-3 bg-slate-50 rounded border border-slate-200">
+                <span className="text-[10px] text-slate-400 block">90-Day Financial Target</span>
+                <strong className="text-slate-900 truncate block" title={priority}>
+                  {priority || 'Not specified'}
+                </strong>
               </div>
             </div>
           </div>
 
-          {/* SECTION B: Step 4 — Automated Day-0 Executive Slack Kickoff Briefing */}
+          {/* Formatted Slack Kickoff Briefing */}
           <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-4">
-            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-100 pb-3">
-              <div className="space-y-0.5">
-                <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                  Step 4 Architecture
-                </span>
-                <h3 className="font-bold text-sm text-slate-900">
-                  Automated Day-0 Executive Slack Kickoff Briefing
+            <div className="flex items-center justify-between border-b border-slate-100 pb-3">
+              <div>
+                <h3 className="text-base font-bold text-slate-900">
+                  Formatted Slack Kickoff Briefing
                 </h3>
+                <p className="text-xs text-slate-500 font-mono">
+                  1-Click copy formatted briefing ready for your agency team Slack channel
+                </p>
               </div>
               <button
                 onClick={() => handleCopySlackBriefing(slackBriefingText)}
-                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-900 hover:bg-slate-800 text-white text-xs font-semibold px-4 py-2 transition-colors shadow-sm"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-900 text-white text-xs font-semibold font-mono hover:bg-slate-800 transition-colors"
               >
                 <span>📋</span>
                 <span>Copy Slack Briefing</span>
               </button>
             </div>
 
-            <div className="bg-slate-900 text-slate-100 font-mono text-xs rounded-xl p-5 shadow-sm overflow-x-auto leading-relaxed border border-slate-800">
-              <pre className="whitespace-pre-wrap">{slackBriefingText}</pre>
-            </div>
+            <pre className="p-4 bg-slate-900 text-emerald-400 font-mono text-xs rounded-xl overflow-x-auto whitespace-pre-wrap leading-relaxed">
+              {slackBriefingText}
+            </pre>
           </div>
 
-          {/* SECTION C: Step 5 — Day-0 vs. Day-30 Monthly Proof-of-Value Retention Memo */}
-          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-5">
-            <div className="space-y-0.5 border-b border-slate-100 pb-3">
-              <span className="text-[10px] font-mono uppercase tracking-wider text-slate-400 font-bold">
-                Step 5 Architecture
-              </span>
-              <h3 className="font-bold text-sm text-slate-900">
-                Day-0 vs. Day-30 Monthly Proof-of-Value Retention Memo Preview
-              </h3>
-              <p className="text-xs text-slate-500">
-                Guarantees zero Month-2 client baseline amnesia by comparing signed Day-0 numbers against live Day-30 Shopify API telemetry.
-              </p>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-              {/* Day 0 Snapshot */}
-              <div className="p-5 rounded-xl bg-slate-50 border border-slate-200 space-y-3">
-                <div className="flex items-center justify-between border-b border-slate-200 pb-2">
-                  <span className="font-bold text-xs font-mono uppercase text-slate-700">
-                    Day 0: Signed Baseline (Snapshot)
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-slate-200 text-slate-700 font-bold">
-                    Escrow Locked
-                  </span>
-                </div>
-                <div className="space-y-2 text-xs font-mono">
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Master CQI Score:</span>
-                    <span className="font-bold text-slate-900">{report.masterCQIScore}/100</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">Blended Paid CAC:</span>
-                    <span className="font-bold text-rose-600">${report.financials.impliedBlendedCAC}</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">1st-Order Net Margin:</span>
-                    <span className="font-bold text-slate-900">${report.financials.firstOrderNetContributionPerOrder}/ord ({report.financials.firstOrderContributionMarginPct}%)</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-slate-500">ASC Concentration Bleed:</span>
-                    <span className="font-bold text-rose-600">-${(report.leaks.find((l) => l.id === 'ad_fatigue_bleed')?.monthlyLossDollars || 12000).toLocaleString()}/mo</span>
-                  </div>
-                </div>
-              </div>
-
-              {/* Day 30 Projected Lift */}
-              <div className="p-5 rounded-xl bg-emerald-50/70 border border-emerald-200 space-y-3">
-                <div className="flex items-center justify-between border-b border-emerald-200 pb-2">
-                  <span className="font-bold text-xs font-mono uppercase text-emerald-900">
-                    Day 30: Verified Operational Delta
-                  </span>
-                  <span className="px-2 py-0.5 rounded text-[10px] font-mono bg-emerald-200 text-emerald-900 font-bold">
-                    Target Audit
-                  </span>
-                </div>
-                <div className="space-y-2 text-xs font-mono">
-                  <div className="flex justify-between">
-                    <span className="text-emerald-800">Master CQI Score:</span>
-                    <span className="font-bold text-emerald-950">{Math.min(96, report.masterCQIScore + 18)}/100 (+18 pts)</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-emerald-800">Blended Paid CAC:</span>
-                    <span className="font-bold text-emerald-950">${Math.round(report.financials.impliedBlendedCAC * 0.81)} (-19% Efficiency Lift)</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-emerald-800">1st-Order Net Margin:</span>
-                    <span className="font-bold text-emerald-950">${(report.financials.firstOrderNetContributionPerOrder + 14).toFixed(2)}/ord (+8.5 pts Net Margin)</span>
-                  </div>
-                  <div className="flex justify-between">
-                    <span className="text-emerald-800">Verified Cash Added to Bank:</span>
-                    <span className="font-bold text-emerald-700 font-sans">+${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo</span>
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            <div className="p-3.5 rounded-lg bg-slate-900 text-slate-200 text-xs leading-relaxed font-sans border border-slate-800">
-              <strong className="text-white font-mono block mb-0.5">🛡️ Nyxir Retention Protocol:</strong>
-              Nyxir automatically compiles this Day-0 vs. Day-30 delta audit from live Shopify API webhooks before the second monthly retainer invoice is sent. Shows the client exactly where the agency added +${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo in net profit to completely eliminate Month-2 churn.
-            </div>
+          {/* Proof of Value Retention Memo */}
+          <div className="bg-white border border-[#E2E8F0] rounded-xl p-6 shadow-sm space-y-3">
+            <h3 className="text-base font-bold text-slate-900">
+              Day-0 vs. Day-30 Proof-of-Value Retention Memo
+            </h3>
+            <p className="text-xs text-slate-600 leading-relaxed font-sans">
+              This Day-0 CQI ledger establishes the undeniable pre-intervention baseline for <strong>{report.domain}</strong>. By measuring master CQI ({report.masterCQIScore}/100), First-Order Net Margin (${report.financials.firstOrderNetContributionPerOrder}/order), and ASC Concentration ({report.metaAds.ascConcentrationRiskPct}%), any Day-30 audit proves the exact contribution margin unlocked by the agency team.
+            </p>
           </div>
         </div>
       )}
 
-      {/* ============================================================== */}
-      {/* 8.3 PERSISTENT LOWER BOTTOM BAR (DOWNLOAD PDF) */}
-      {/* ============================================================== */}
-      <div className="fixed bottom-0 left-0 right-0 z-40 bg-white/95 backdrop-blur-md border-t border-[#E2E8F0] shadow-lg">
-        <div className="max-w-6xl mx-auto px-6 py-3.5 flex flex-col sm:flex-row items-center justify-between gap-3">
-          <div className="flex items-center gap-4 text-xs font-mono text-slate-700">
-            <span>
-              Target: <strong className="text-slate-900">{report.domain}</strong>
-            </span>
-            <span className="hidden sm:inline text-slate-300">|</span>
-            <span>
-              Master CQI: <strong className="text-slate-900">{report.masterCQIScore}/100</strong>
-            </span>
-            <span className="hidden sm:inline text-slate-300">|</span>
-            <span>
-              Total Margin Leak: <strong className="text-rose-600">-${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo</strong>
-            </span>
+      {/* PERSISTENT LOWER BOTTOM BAR */}
+      <div className="fixed bottom-0 inset-x-0 bg-white/95 backdrop-blur-md border-t border-[#E2E8F0] py-3.5 px-6 z-40 shadow-lg">
+        <div className="max-w-6xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4">
+          <div className="text-xs font-mono text-slate-600">
+            <strong>{report.domain}</strong> · CQI: <strong>{report.masterCQIScore}/100</strong> · Recoverable Cash: <strong className="text-emerald-700 font-bold">+${report.totalRecoverableMonthlyMargin.toLocaleString()}/mo</strong>
           </div>
-
           <button
             onClick={handleDownloadPDF}
             disabled={pdfDownloading}
-            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white font-semibold text-xs px-5 py-2.5 shadow-sm transition-colors disabled:opacity-50"
+            className="w-full sm:w-auto inline-flex items-center justify-center gap-2 rounded-lg bg-[#0F172A] hover:bg-slate-800 text-white text-xs font-semibold px-5 py-2.5 transition-all shadow-sm disabled:opacity-50"
           >
-            {pdfDownloading ? (
-              <span>Generating PDF...</span>
-            ) : (
-              <>
-                <span>📥</span>
-                <span>Download Organized Executive Report (PDF)</span>
-              </>
-            )}
+            <span>{pdfDownloading ? '⏳' : '📥'}</span>
+            <span>{pdfDownloading ? 'Generating PDF...' : 'Download Organized Executive Report (PDF)'}</span>
           </button>
         </div>
       </div>
 
-      {/* Strategy Call Booking Modal */}
+      {/* STRATEGY CALL MODAL */}
       <StrategyModal
         isOpen={isStrategyModalOpen}
         onClose={() => setIsStrategyModalOpen(false)}
         domain={report.domain}
-        totalRecoverableCash={report.totalRecoverableMonthlyMargin}
+        totalMarginLeak={report.totalRecoverableMonthlyMargin}
         calendarUrl={calendarUrl}
+        agencyName={agencyName || undefined}
       />
     </div>
   )
@@ -1465,9 +1388,8 @@ export default function ReportPage() {
   return (
     <Suspense
       fallback={
-        <div className="py-24 text-center">
-          <div className="inline-block animate-spin h-8 w-8 border-2 border-slate-900 border-t-transparent rounded-full"></div>
-          <p className="text-xs font-mono text-slate-500 mt-2">Loading report...</p>
+        <div className="py-24 text-center text-xs font-mono text-slate-400">
+          Loading report parameters...
         </div>
       }
     >

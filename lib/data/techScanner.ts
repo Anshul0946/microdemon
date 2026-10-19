@@ -132,7 +132,7 @@ export function parseHtmlTechStack(html: string): TechScanResult {
   }
 }
 
-function getFallbackTechScan(): TechScanResult {
+export function getFallbackTechScan(): TechScanResult {
   return {
     detectedPixels: ['Meta Pixel', 'Google Tag Manager'],
     detectedRetention: ['Klaviyo'],

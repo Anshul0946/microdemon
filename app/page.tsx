@@ -49,6 +49,9 @@ export default function HomePage() {
             detectedCurrency: data.detectedCurrency,
           })
         )
+        if (data.discovery) {
+          sessionStorage.setItem(`cqi_discovery_${data.domain}`, JSON.stringify(data.discovery))
+        }
       } catch {
         // ignore
       }

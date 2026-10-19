@@ -16,6 +16,8 @@ import {
   computeMasterCQI,
   getCustomerQualityTier,
   computeMarginLeaks,
+  buildFourSourceWaterfall,
+  computeDataAuthenticityScore,
 } from '@/lib/cqi/scoring'
 import { computeCrossRelations } from '@/lib/cqi/crossRelations'
 import { saveAuditReport } from '@/lib/data/reportStore'
@@ -34,6 +36,11 @@ export async function POST(req: NextRequest) {
       monthlyAdSpend = 25000,
       cogsPct = 30,
       refundRatePct = 8,
+      revenueMode = 'CONFIRMED_ONLINE',
+      adSpendMode = 'CONFIRMED_ONLINE',
+      cogsMode = 'CONFIRMED_ONLINE',
+      refundMode = 'CONFIRMED_ONLINE',
+      varianceExplanations,
       qualificationAnswers,
       agencyName,
     } = body
@@ -59,6 +66,11 @@ export async function POST(req: NextRequest) {
       monthlyAdSpend: Math.max(500, Number(monthlyAdSpend)),
       cogsPct: Math.min(85, Math.max(5, Number(cogsPct))),
       refundRatePct: Math.min(60, Math.max(0.5, Number(refundRatePct))),
+      revenueMode,
+      adSpendMode,
+      cogsMode,
+      refundMode,
+      varianceExplanations,
     }
 
     // Run parallel telemetry probes (all with <= 6s timeouts and Promise.allSettled)
@@ -106,17 +118,20 @@ export async function POST(req: NextRequest) {
       adsSettled.status === 'fulfilled'
         ? adsSettled.value
         : {
-            activeAdCount: 40,
-            videoAdSharePct: 65,
-            staticAdSharePct: 35,
-            discountCopySharePct: 25,
-            ascConcentrationRiskPct: 38,
+            activeAdCount: 0,
+            videoAdSharePct: 0,
+            staticAdSharePct: 0,
+            discountCopySharePct: 0,
+            ascConcentrationRiskPct: 0,
             evidence: 'BENCHMARK_ESTIMATED' as const,
-            evergreenAds90dPlusPct: 24,
-            scalingAds30to90dPct: 38,
-            testingAds7to30dPct: 26,
-            freshLaunchesUnder7dPct: 12,
-            oldestActiveAdDays: 140,
+            adsVerified: false,
+            adEvaluationNotice:
+              'Evaluated via Current On-Site Pixel & Offer Posture (0 Public Ad Library Items Found)',
+            evergreenAds90dPlusPct: 0,
+            scalingAds30to90dPct: 0,
+            testingAds7to30dPct: 0,
+            freshLaunchesUnder7dPct: 0,
+            oldestActiveAdDays: 0,
           }
 
     const searchSummary =
@@ -127,6 +142,7 @@ export async function POST(req: NextRequest) {
             searchSnippetSummary: `${cleanDomain} commercial footprint.`,
             reviewSentimentScore: 82,
             detectedPublicFloorRevenue: 0,
+            publicRevenueEvidence: undefined,
             realityCheck: {
               overrideApplied: false,
               originalMonthlyRevenue: rawInputs.monthlyRevenue,
@@ -228,6 +244,25 @@ export async function POST(req: NextRequest) {
       benchmark.label
     )
 
+    const fourSourceWaterfall = buildFourSourceWaterfall(
+      calibratedInputs,
+      financials,
+      storefront,
+      techScan,
+      metaAds,
+      benchmark,
+      leaks,
+      realityCheck.subNicheName || benchmark.label,
+      searchSummary.searchSnippetSummary ? 'STRONG_AI_PRESENCE' : 'ZERO_AI_PRESENCE',
+      qualificationAnswers
+    )
+
+    const dataAuthenticityScore = computeDataAuthenticityScore(
+      rawInputs,
+      realityCheck.calibratedMonthlyRevenue,
+      realityCheck.calibratedAdSpend
+    )
+
     const report: AuditReportResult = {
       domain: cleanDomain,
       storeTitle: cleanDomain.split('.')[0].toUpperCase(),
@@ -252,6 +287,9 @@ export async function POST(req: NextRequest) {
       subNicheName: realityCheck.subNicheName || benchmark.label,
       agencyName: agencyName ? String(agencyName).trim() : undefined,
       qualificationAnswers,
+      skuAnalytics: storefront.skuAnalytics,
+      fourSourceWaterfall,
+      dataAuthenticityScore,
       createdAt: new Date().toISOString(),
     }
 

@@ -7,6 +7,8 @@ export interface MetaAdTelemetry {
   discountCopySharePct: number
   ascConcentrationRiskPct: number
   evidence: 'LIVE_SCRAPED' | 'BENCHMARK_ESTIMATED'
+  adsVerified: boolean
+  adEvaluationNotice: string
   evergreenAds90dPlusPct: number
   scalingAds30to90dPct: number
   testingAds7to30dPct: number
@@ -169,6 +171,8 @@ export async function fetchMetaAdTelemetry(
       discountCopySharePct,
       ascConcentrationRiskPct,
       evidence: 'LIVE_SCRAPED',
+      adsVerified: true,
+      adEvaluationNotice: `Live Meta Ad Library Telemetry Verified (${totalAds} Public Ads Found)`,
       evergreenAds90dPlusPct: Math.round((evergreenCount / totalAds) * 100),
       scalingAds30to90dPct: Math.round((scalingCount / totalAds) * 100),
       testingAds7to30dPct: Math.round((testingCount / totalAds) * 100),
@@ -177,48 +181,28 @@ export async function fetchMetaAdTelemetry(
     }
   }
 
-  // Scale-calibrated estimator fallback
+  // RULE 0.3: Never invent fake ads when 0 items returned or timed out!
   return getBenchmarkEstimatedAds(monthlyAdSpend, brandScale)
 }
 
 export function getBenchmarkEstimatedAds(
-  monthlyAdSpend: number,
-  brandScale: 'SMB' | 'MID_MARKET' | 'ENTERPRISE' = 'MID_MARKET'
+  _monthlyAdSpend: number,
+  _brandScale: 'SMB' | 'MID_MARKET' | 'ENTERPRISE' = 'MID_MARKET'
 ): MetaAdTelemetry {
-  let estimatedAdCount = Math.max(12, Math.round(monthlyAdSpend / 1400))
-  let evergreen = 18
-  let scaling = 38
-  let testing = 28
-  let fresh = 16
-  let oldestDays = 112
-
-  if (brandScale === 'ENTERPRISE' || monthlyAdSpend >= 100000) {
-    estimatedAdCount = Math.max(48, Math.min(220, Math.round(monthlyAdSpend / 32000)))
-    evergreen = 32
-    scaling = 41
-    testing = 18
-    fresh = 9
-    oldestDays = 265
-  } else if (brandScale === 'SMB' || monthlyAdSpend < 25000) {
-    estimatedAdCount = Math.max(8, Math.min(24, Math.round(monthlyAdSpend / 1800)))
-    evergreen = 8
-    scaling = 25
-    testing = 42
-    fresh = 25
-    oldestDays = 64
-  }
-
   return {
-    activeAdCount: estimatedAdCount,
-    videoAdSharePct: 62,
-    staticAdSharePct: 38,
-    discountCopySharePct: 34,
-    ascConcentrationRiskPct: 42,
+    activeAdCount: 0,
+    videoAdSharePct: 0,
+    staticAdSharePct: 0,
+    discountCopySharePct: 0,
+    ascConcentrationRiskPct: 0,
     evidence: 'BENCHMARK_ESTIMATED',
-    evergreenAds90dPlusPct: evergreen,
-    scalingAds30to90dPct: scaling,
-    testingAds7to30dPct: testing,
-    freshLaunchesUnder7dPct: fresh,
-    oldestActiveAdDays: oldestDays,
+    adsVerified: false,
+    adEvaluationNotice:
+      'Evaluated via Current On-Site Pixel & Offer Posture (0 Public Ad Library Items Found)',
+    evergreenAds90dPlusPct: 0,
+    scalingAds30to90dPct: 0,
+    testingAds7to30dPct: 0,
+    freshLaunchesUnder7dPct: 0,
+    oldestActiveAdDays: 0,
   }
 }

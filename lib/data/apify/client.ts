@@ -47,7 +47,7 @@ export async function runApifyActor<T>(
       }
 
       // Check status codes for rotation
-      if (response.status === 401 || response.status === 402 || response.status === 429) {
+      if (response.status === 401 || response.status === 402 || response.status === 403 || response.status === 429) {
         console.warn(
           `[Apify Client] Key #${i + 1} failed with HTTP ${response.status} for actor ${actorId}. Failing over to next key...`
         )

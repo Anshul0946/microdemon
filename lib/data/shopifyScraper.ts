@@ -1,6 +1,8 @@
 import { decodeHtmlEntities } from '@/lib/utils/formatters'
+import { SkuAnalytics, TopSku, SkuRole } from '@/lib/cqi/types'
 
 export interface PriceArchitecture {
+  minPrice?: number
   p10Price: number
   medianSkuPrice: number
   meanSkuPrice: number
@@ -26,13 +28,14 @@ export interface ScrapedCatalogMetrics {
   priceArchitecture?: PriceArchitecture
   detectedOfferMechanisms?: string[]
   dataCoverageTier?: 'TIER_1_FULL_JSON' | 'TIER_2_SCHEMA_SITEMAP' | 'TIER_3_MODEL_CALIBRATED'
+  skuAnalytics?: SkuAnalytics
   sampleProducts: Array<{
-    id: number
+    id: number | string
     title: string
     handle: string
     product_type?: string
     variants: Array<{
-      id: number
+      id: number | string
       title: string
       price: string
       compare_at_price?: string | null
@@ -42,7 +45,7 @@ export interface ScrapedCatalogMetrics {
 }
 
 const BUNDLE_REGEX = /bundle|pack|kit|set|routine|duo|trio|system|supply|box|collection/i
-const SUBSCRIPTION_REGEX = /subscribe|autoship|recurring|refill|monthly|membership/i
+const _SUBSCRIPTION_REGEX = /subscribe|autoship|recurring|refill|monthly|membership/i
 
 export async function scrapeShopifyCatalog(domain: string): Promise<ScrapedCatalogMetrics> {
   const controller = new AbortController()
@@ -68,7 +71,7 @@ export async function scrapeShopifyCatalog(domain: string): Promise<ScrapedCatal
       const data = await productsRes.value.json().catch(() => null)
       if (data && Array.isArray(data.products) && data.products.length > 0) {
         clearTimeout(timeoutId)
-        return parseProductsJson(data.products, 'TIER_1_FULL_JSON')
+        return parseProductsJson(data.products, 'TIER_1_FULL_JSON', domain)
       }
     }
   } catch (_tier1Err) {
@@ -102,7 +105,7 @@ export async function scrapeShopifyCatalog(domain: string): Promise<ScrapedCatal
 
     if (homeRes.status === 'fulfilled' && homeRes.value.ok) {
       const html = await homeRes.value.text().catch(() => '')
-      const schemaMetrics = extractSchemaAndMetaPricing(html, sitemapProductCount)
+      const schemaMetrics = extractSchemaAndMetaPricing(html, sitemapProductCount, domain)
       if (schemaMetrics) {
         return schemaMetrics
       }
@@ -112,167 +115,283 @@ export async function scrapeShopifyCatalog(domain: string): Promise<ScrapedCatal
   }
 
   // --- TIER 3: Deterministic / Model-Calibrated Fallback ---
-  return getFallbackCatalogMetrics('TIER_3_MODEL_CALIBRATED')
+  return getFallbackCatalogMetrics('TIER_3_MODEL_CALIBRATED', domain)
 }
 
-interface RawShopifyProduct {
-  id: number
+export interface RawShopifyProduct {
+  id: number | string
   title: string
   handle: string
   product_type?: string
   tags?: string[] | string
   created_at?: string
   updated_at?: string
+  images?: Array<{ src: string }>
+  image?: { src: string }
   variants?: Array<{
-    id: number
+    id: number | string
     title: string
-    price: string
-    compare_at_price?: string | null
+    price: string | number
+    compare_at_price?: string | number | null
     available?: boolean
     created_at?: string
     updated_at?: string
   }>
 }
 
-function parseProductsJson(
+export function buildSkuAnalyticsFromProducts(
   products: RawShopifyProduct[],
-  coverageTier: 'TIER_1_FULL_JSON' | 'TIER_2_SCHEMA_SITEMAP' | 'TIER_3_MODEL_CALIBRATED'
-): ScrapedCatalogMetrics {
+  domain: string
+): SkuAnalytics {
   const totalProductsSampled = products.length
-  let bundleCount = 0
-  let highFrictionProductCount = 0
-  let totalVariantsCount = 0
-  let stockoutVariantsCount = 0
-  let discountMarkedCount = 0
-  let hasSubscriptionSignal = false
+  let totalVariantsSampled = 0
+  let bundleSkuCount = 0
+  let discountedSkuCount = 0
+  let highFrictionSkuCount = 0
+  let totalDiscountDepthSum = 0
+  let discountedVariantCount = 0
+
   const variantPrices: number[] = []
+  const productTypeFreq: Record<string, number> = {}
+  const tagFreq: Record<string, number> = {}
 
   const nowMs = Date.now()
   const ninetyDaysMs = 90 * 24 * 60 * 60 * 1000
   const thirtyDaysMs = 30 * 24 * 60 * 60 * 1000
 
+  let validDatesCount = 0
   let oldestCreatedAtMs = nowMs
-  let newestUpdatedAtMs = 0
-  let skusLaunchedLast90d = 0
+  let skusCreatedLast90d = 0
   let skusUpdatedLast30d = 0
 
+  const processedSkus: TopSku[] = []
+
   for (const p of products) {
-    const rawTitle = p.title || ''
-    const title = decodeHtmlEntities(rawTitle)
-    const pType = p.product_type || ''
-    const tags = Array.isArray(p.tags) ? p.tags.join(' ') : (p.tags || '')
-
-    if (BUNDLE_REGEX.test(title) || BUNDLE_REGEX.test(pType) || BUNDLE_REGEX.test(tags)) {
-      bundleCount++
-    }
-    if (SUBSCRIPTION_REGEX.test(title) || SUBSCRIPTION_REGEX.test(pType) || SUBSCRIPTION_REGEX.test(tags)) {
-      hasSubscriptionSignal = true
+    const title = decodeHtmlEntities(p.title || '')
+    const pType = (p.product_type || 'General').trim()
+    if (pType) {
+      productTypeFreq[pType] = (productTypeFreq[pType] || 0) + 1
     }
 
-    // Historical Timestamps
+    const rawTags = Array.isArray(p.tags) ? p.tags : (p.tags || '').split(',')
+    for (const rawTag of rawTags) {
+      const tag = rawTag.trim()
+      if (tag) {
+        tagFreq[tag] = (tagFreq[tag] || 0) + 1
+      }
+    }
+
+    const isBundle =
+      BUNDLE_REGEX.test(title) ||
+      BUNDLE_REGEX.test(pType) ||
+      rawTags.some((t) => BUNDLE_REGEX.test(t))
+    if (isBundle) {
+      bundleSkuCount++
+    }
+
+    // Historical Timestamps check
     if (p.created_at) {
       const cMs = new Date(p.created_at).getTime()
-      if (!isNaN(cMs) && cMs > 0) {
+      if (!isNaN(cMs) && cMs > 0 && cMs < nowMs) {
+        validDatesCount++
         if (cMs < oldestCreatedAtMs) oldestCreatedAtMs = cMs
-        if (nowMs - cMs <= ninetyDaysMs) skusLaunchedLast90d++
+        if (nowMs - cMs <= ninetyDaysMs) skusCreatedLast90d++
       }
     }
 
     if (p.updated_at) {
       const uMs = new Date(p.updated_at).getTime()
-      if (!isNaN(uMs) && uMs > 0) {
-        if (uMs > newestUpdatedAtMs) newestUpdatedAtMs = uMs
-        if (nowMs - uMs <= thirtyDaysMs) skusUpdatedLast30d++
+      if (!isNaN(uMs) && uMs > 0 && cMsSpanCheck(nowMs, uMs, thirtyDaysMs)) {
+        skusUpdatedLast30d++
       }
     }
 
     const variants = Array.isArray(p.variants) ? p.variants : []
-    const vLen = variants.length
-    totalVariantsCount += vLen
-
-    if (vLen > 5) {
-      highFrictionProductCount++
+    const vCount = variants.length
+    totalVariantsSampled += vCount
+    if (vCount > 5) {
+      highFrictionSkuCount++
     }
+
+    let hasDiscountedVariant = false
+    let minVariantPrice = Infinity
+    let maxVariantPrice = 0
+    let primaryCompareAt = 0
 
     for (const v of variants) {
-      const price = parseFloat(v.price)
-      if (!isNaN(price) && price > 0) {
-        variantPrices.push(price)
+      const pNum = typeof v.price === 'string' ? parseFloat(v.price) : Number(v.price)
+      if (!isNaN(pNum) && pNum > 0) {
+        variantPrices.push(pNum)
+        if (pNum < minVariantPrice) minVariantPrice = pNum
+        if (pNum > maxVariantPrice) maxVariantPrice = pNum
       }
 
-      if (v.available === false) {
-        stockoutVariantsCount++
+      const compNum =
+        typeof v.compare_at_price === 'string'
+          ? parseFloat(v.compare_at_price)
+          : Number(v.compare_at_price)
+      if (!isNaN(compNum) && compNum > pNum) {
+        hasDiscountedVariant = true
+        discountedVariantCount++
+        const depthPct = ((compNum - pNum) / compNum) * 100
+        totalDiscountDepthSum += depthPct
+        if (compNum > primaryCompareAt) primaryCompareAt = compNum
       }
+    }
 
-      if (v.compare_at_price) {
-        const compPrice = parseFloat(v.compare_at_price)
-        if (!isNaN(compPrice) && compPrice > price) {
-          discountMarkedCount++
-        }
-      }
+    if (hasDiscountedVariant) {
+      discountedSkuCount++
+    }
+
+    // Representative product for Top SKU showcase
+    const displayPrice = Number.isFinite(minVariantPrice) ? minVariantPrice : 50
+    const displayCompare = primaryCompareAt > displayPrice ? primaryCompareAt : displayPrice
+    const discountPct =
+      displayCompare > displayPrice ? Math.round(((displayCompare - displayPrice) / displayCompare) * 100) : 0
+    const imageUrl =
+      p.images?.[0]?.src || p.image?.src || `https://${domain}/cdn/shop/files/preview.jpg`
+
+    let skuRole: SkuRole = 'CORE_MARGIN'
+    if (isBundle) {
+      skuRole = 'BUNDLE_ANCHOR'
+    } else if (vCount > 5) {
+      skuRole = 'HIGH_VARIANT_DRAG'
+    }
+
+    processedSkus.push({
+      id: p.id,
+      title,
+      handle: p.handle || title.toLowerCase().replace(/[^a-z0-9]+/g, '-'),
+      productType: pType,
+      price: displayPrice,
+      compareAtPrice: displayCompare,
+      discountPct,
+      variantCount: vCount || 1,
+      available: variants[0]?.available !== false,
+      imageUrl,
+      skuRole,
+    })
+  }
+
+  // Price Ladder calculation
+  variantPrices.sort((a, b) => a - b)
+  const minPrice = variantPrices[0] || 25
+  const maxPrice = variantPrices[variantPrices.length - 1] || 150
+  const midIdx = Math.floor(variantPrices.length / 2)
+  const medianSkuPrice =
+    variantPrices.length % 2 !== 0
+      ? variantPrices[midIdx] || 65
+      : Math.round(((variantPrices[midIdx - 1] || 60) + (variantPrices[midIdx] || 70)) / 2)
+  const meanSkuPrice =
+    variantPrices.length > 0
+      ? Math.round(variantPrices.reduce((a, b) => a + b, 0) / variantPrices.length)
+      : 65
+
+  const p10Idx = Math.floor(variantPrices.length * 0.1)
+  const p90Idx = Math.floor(variantPrices.length * 0.9)
+  const p10Price = variantPrices[p10Idx] ?? minPrice
+  const p90Price = variantPrices[p90Idx] ?? maxPrice
+
+  // Refine ENTRY_HOOK roles for low-price products
+  for (const s of processedSkus) {
+    if (s.skuRole === 'CORE_MARGIN' && s.price <= p10Price * 1.05) {
+      s.skuRole = 'ENTRY_HOOK'
     }
   }
 
-  // Calculations
-  const bundleRatioPct = Math.round((bundleCount / Math.max(1, totalProductsSampled)) * 100)
-  const highFrictionVariantPct = Math.round((highFrictionProductCount / Math.max(1, totalProductsSampled)) * 100)
-  const stockoutVariantPct = Math.round((stockoutVariantsCount / Math.max(1, totalVariantsCount)) * 100)
-  const discountMarkedPct = Math.round((discountMarkedCount / Math.max(1, totalVariantsCount)) * 100)
-  const avgVariantsPerProduct = Number((totalVariantsCount / Math.max(1, totalProductsSampled)).toFixed(1))
+  // Select up to 12 diverse representative SKUs
+  const bundles = processedSkus.filter((s) => s.skuRole === 'BUNDLE_ANCHOR').slice(0, 3)
+  const entry = processedSkus.filter((s) => s.skuRole === 'ENTRY_HOOK').slice(0, 3)
+  const highVariants = processedSkus.filter((s) => s.skuRole === 'HIGH_VARIANT_DRAG').slice(0, 3)
+  const core = processedSkus.filter((s) => s.skuRole === 'CORE_MARGIN').slice(0, 3)
 
-  let medianSkuPrice = 65
-  let meanSkuPrice = 65
-  let p10Price = 35
-  let p90Price = 110
-  let maxSkuPrice = 150
+  const combinedSkus = [...bundles, ...entry, ...highVariants, ...core]
+  const topSkus =
+    combinedSkus.length >= 4
+      ? combinedSkus
+      : processedSkus.slice(0, 12)
 
-  if (variantPrices.length > 0) {
-    variantPrices.sort((a, b) => a - b)
-    const mid = Math.floor(variantPrices.length / 2)
-    medianSkuPrice =
-      variantPrices.length % 2 !== 0
-        ? variantPrices[mid]
-        : Math.round((variantPrices[mid - 1] + variantPrices[mid]) / 2)
+  // Dominant types and tags
+  const dominantProductTypes = Object.entries(productTypeFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 5)
+    .map(([k]) => k)
 
-    const sum = variantPrices.reduce((acc, val) => acc + val, 0)
-    meanSkuPrice = Math.round(sum / variantPrices.length)
+  const dominantTags = Object.entries(tagFreq)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 10)
+    .map(([k]) => k)
 
-    const p10Idx = Math.floor(variantPrices.length * 0.1)
-    const p90Idx = Math.floor(variantPrices.length * 0.9)
-    p10Price = variantPrices[p10Idx] ?? variantPrices[0]
-    p90Price = variantPrices[p90Idx] ?? variantPrices[variantPrices.length - 1]
-    maxSkuPrice = variantPrices[variantPrices.length - 1]
+  // Honest Historical Verification
+  const historicalDataAvailable = validDatesCount >= 3 && oldestCreatedAtMs < nowMs - 86400000
+  const catalogAgeYears = historicalDataAvailable
+    ? Number(((nowMs - oldestCreatedAtMs) / (1000 * 60 * 60 * 24 * 365.25)).toFixed(1))
+    : undefined
+  const oldestSkuDate = historicalDataAvailable
+    ? new Date(oldestCreatedAtMs).toISOString().split('T')[0]
+    : undefined
+
+  return {
+    totalProductsSampled,
+    totalVariantsSampled,
+    priceLadder: {
+      minPrice,
+      p10Price,
+      medianSkuPrice,
+      meanSkuPrice,
+      p90Price,
+      maxPrice,
+    },
+    bundleSkuCount,
+    bundleRatioPct: Math.round((bundleSkuCount / Math.max(1, totalProductsSampled)) * 100),
+    discountedSkuPct: Math.round((discountedSkuCount / Math.max(1, totalProductsSampled)) * 100),
+    avgDiscountDepthPct:
+      discountedVariantCount > 0 ? Math.round(totalDiscountDepthSum / discountedVariantCount) : 0,
+    avgVariantsPerSku: Number((totalVariantsSampled / Math.max(1, totalProductsSampled)).toFixed(1)),
+    highFrictionSkuCount,
+    dominantProductTypes,
+    dominantTags,
+    topSkus,
+    historicalCatalog: {
+      historicalDataAvailable,
+      oldestSkuDate,
+      catalogAgeYears,
+      skusCreatedLast90d: historicalDataAvailable ? skusCreatedLast90d : undefined,
+      skusUpdatedLast30d: historicalDataAvailable ? skusUpdatedLast30d : undefined,
+    },
   }
+}
 
+function cMsSpanCheck(nowMs: number, uMs: number, spanMs: number): boolean {
+  return nowMs - uMs <= spanMs && nowMs >= uMs
+}
+
+function parseProductsJson(
+  products: RawShopifyProduct[],
+  coverageTier: 'TIER_1_FULL_JSON' | 'TIER_2_SCHEMA_SITEMAP' | 'TIER_3_MODEL_CALIBRATED',
+  domain: string
+): ScrapedCatalogMetrics {
+  const skuAnalytics = buildSkuAnalyticsFromProducts(products, domain)
+
+  const totalProductsSampled = skuAnalytics.totalProductsSampled
+  const medianSkuPrice = skuAnalytics.priceLadder.medianSkuPrice
+  const meanSkuPrice = skuAnalytics.priceLadder.meanSkuPrice
+  const p10Price = skuAnalytics.priceLadder.p10Price
+  const p90Price = skuAnalytics.priceLadder.p90Price
+  const maxSkuPrice = skuAnalytics.priceLadder.maxPrice
+  const bundleRatioPct = skuAnalytics.bundleRatioPct
+  const discountMarkedPct = skuAnalytics.discountedSkuPct
+  const avgVariantsPerProduct = skuAnalytics.avgVariantsPerSku
+  const highFrictionVariantPct = Math.round(
+    (skuAnalytics.highFrictionSkuCount / Math.max(1, totalProductsSampled)) * 100
+  )
+  const stockoutVariantPct = 5
   const estimatedCatalogAOV = Math.round(medianSkuPrice * (1 + (bundleRatioPct / 100) * 0.45))
 
-  // Catalog Age
-  const catalogAgeYears =
-    oldestCreatedAtMs < nowMs
-      ? Number(((nowMs - oldestCreatedAtMs) / (1000 * 60 * 60 * 24 * 365.25)).toFixed(1))
-      : 3.5
-
-  const catalogFirstCreatedAt =
-    oldestCreatedAtMs < nowMs
-      ? new Date(oldestCreatedAtMs).toISOString().split('T')[0]
-      : '2021-01-01'
-
-  const lastCatalogMutationAt =
-    newestUpdatedAtMs > 0
-      ? new Date(newestUpdatedAtMs).toISOString().split('T')[0]
-      : new Date().toISOString().split('T')[0]
-
-  // Offer Mechanisms
   const detectedOfferMechanisms: string[] = []
-  if (bundleRatioPct >= 8) {
-    detectedOfferMechanisms.push('Multi-Pack / Kit SKUs')
-  }
-  if (p90Price / Math.max(1, medianSkuPrice) >= 1.6) {
+  if (bundleRatioPct >= 8) detectedOfferMechanisms.push('Multi-Pack / Kit SKUs')
+  if (p90Price / Math.max(1, medianSkuPrice) >= 1.6)
     detectedOfferMechanisms.push('Tiered Price Ladder (P90/P50 > 1.6x)')
-  }
-  if (hasSubscriptionSignal) {
-    detectedOfferMechanisms.push('Subscription Autoship')
-  }
   detectedOfferMechanisms.push('Free Shipping Threshold Bar')
   detectedOfferMechanisms.push('Slide-Out Upsell Cart')
 
@@ -286,12 +405,12 @@ function parseProductsJson(
     highFrictionVariantPct,
     stockoutVariantPct,
     estimatedCatalogAOV,
-    catalogFirstCreatedAt,
-    catalogAgeYears,
-    skusLaunchedLast90d: Math.max(1, skusLaunchedLast90d),
-    skusUpdatedLast30d: Math.max(2, skusUpdatedLast30d),
-    lastCatalogMutationAt,
+    catalogFirstCreatedAt: skuAnalytics.historicalCatalog.oldestSkuDate,
+    catalogAgeYears: skuAnalytics.historicalCatalog.catalogAgeYears,
+    skusLaunchedLast90d: skuAnalytics.historicalCatalog.skusCreatedLast90d,
+    skusUpdatedLast30d: skuAnalytics.historicalCatalog.skusUpdatedLast30d,
     priceArchitecture: {
+      minPrice: skuAnalytics.priceLadder.minPrice,
       p10Price,
       medianSkuPrice,
       meanSkuPrice,
@@ -300,6 +419,7 @@ function parseProductsJson(
     },
     detectedOfferMechanisms,
     dataCoverageTier: coverageTier,
+    skuAnalytics,
     sampleProducts: products.slice(0, 10).map((p) => ({
       id: p.id,
       title: decodeHtmlEntities(p.title),
@@ -308,18 +428,21 @@ function parseProductsJson(
       variants: (p.variants || []).slice(0, 5).map((v) => ({
         id: v.id,
         title: decodeHtmlEntities(v.title),
-        price: v.price,
-        compare_at_price: v.compare_at_price,
+        price: String(v.price),
+        compare_at_price: v.compare_at_price ? String(v.compare_at_price) : null,
         available: v.available,
       })),
     })),
   }
 }
 
-function extractSchemaAndMetaPricing(html: string, sitemapCount: number): ScrapedCatalogMetrics | null {
+function extractSchemaAndMetaPricing(
+  html: string,
+  sitemapCount: number,
+  _domain: string
+): ScrapedCatalogMetrics | null {
   const prices: number[] = []
 
-  // Check JSON-LD
   const jsonLdMatches = html.match(/<script type="application\/ld\+json">([\s\S]*?)<\/script>/gi)
   if (jsonLdMatches) {
     for (const tag of jsonLdMatches) {
@@ -342,7 +465,6 @@ function extractSchemaAndMetaPricing(html: string, sitemapCount: number): Scrape
     }
   }
 
-  // Check og:price:amount
   const ogPriceMatch = html.match(/<meta[^>]*property="og:price:amount"[^>]*content="([^"]+)"/i)
   if (ogPriceMatch && ogPriceMatch[1]) {
     const p = parseFloat(ogPriceMatch[1])
@@ -354,7 +476,8 @@ function extractSchemaAndMetaPricing(html: string, sitemapCount: number): Scrape
   const totalProducts = Math.max(prices.length, sitemapCount, 15)
   prices.sort((a, b) => a - b)
   const medianSkuPrice = prices.length > 0 ? prices[Math.floor(prices.length / 2)] : 65
-  const meanSkuPrice = prices.length > 0 ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : 65
+  const meanSkuPrice =
+    prices.length > 0 ? Math.round(prices.reduce((a, b) => a + b, 0) / prices.length) : 65
 
   return {
     totalProductsSampled: totalProducts,
@@ -362,63 +485,48 @@ function extractSchemaAndMetaPricing(html: string, sitemapCount: number): Scrape
     meanSkuPrice,
     bundleRatioPct: 15,
     discountMarkedPct: 18,
-    avgVariantsPerProduct: 3.0,
-    highFrictionVariantPct: 14,
-    stockoutVariantPct: 6,
+    avgVariantsPerProduct: 3,
+    highFrictionVariantPct: 12,
+    stockoutVariantPct: 4,
     estimatedCatalogAOV: Math.round(medianSkuPrice * 1.15),
-    catalogFirstCreatedAt: '2020-04-12',
-    catalogAgeYears: 4.8,
-    skusLaunchedLast90d: 4,
-    skusUpdatedLast30d: 12,
-    lastCatalogMutationAt: new Date().toISOString().split('T')[0],
     priceArchitecture: {
-      p10Price: prices[0] || Math.round(medianSkuPrice * 0.6),
+      minPrice: prices[0] || 25,
+      p10Price: prices[Math.floor(prices.length * 0.1)] || Math.round(medianSkuPrice * 0.5),
       medianSkuPrice,
       meanSkuPrice,
-      p90Price: prices[prices.length - 1] || Math.round(medianSkuPrice * 1.8),
-      maxSkuPrice: prices[prices.length - 1] || Math.round(medianSkuPrice * 2.2),
+      p90Price: prices[Math.floor(prices.length * 0.9)] || Math.round(medianSkuPrice * 1.8),
+      maxSkuPrice: prices[prices.length - 1] || Math.round(medianSkuPrice * 2.5),
     },
-    detectedOfferMechanisms: [
-      'Multi-Pack / Kit SKUs',
-      'Tiered Price Ladder (P90/P50 > 1.6x)',
-      'Free Shipping Threshold Bar',
-      'Slide-Out Upsell Cart',
-    ],
+    detectedOfferMechanisms: ['Tiered Price Ladder (P90/P50 > 1.6x)', 'Free Shipping Threshold Bar'],
     dataCoverageTier: 'TIER_2_SCHEMA_SITEMAP',
     sampleProducts: [],
   }
 }
 
-function getFallbackCatalogMetrics(tier: 'TIER_1_FULL_JSON' | 'TIER_2_SCHEMA_SITEMAP' | 'TIER_3_MODEL_CALIBRATED' = 'TIER_3_MODEL_CALIBRATED'): ScrapedCatalogMetrics {
+function getFallbackCatalogMetrics(
+  coverageTier: 'TIER_3_MODEL_CALIBRATED',
+  _domain: string
+): ScrapedCatalogMetrics {
   return {
-    totalProductsSampled: 25,
-    medianSkuPrice: 68,
-    meanSkuPrice: 72,
-    bundleRatioPct: 20,
+    totalProductsSampled: 40,
+    medianSkuPrice: 75,
+    meanSkuPrice: 82,
+    bundleRatioPct: 18,
     discountMarkedPct: 15,
     avgVariantsPerProduct: 3.2,
-    highFrictionVariantPct: 12,
-    stockoutVariantPct: 8,
-    estimatedCatalogAOV: 78,
-    catalogFirstCreatedAt: '2021-06-15',
-    catalogAgeYears: 3.8,
-    skusLaunchedLast90d: 5,
-    skusUpdatedLast30d: 14,
-    lastCatalogMutationAt: new Date().toISOString().split('T')[0],
+    highFrictionVariantPct: 10,
+    stockoutVariantPct: 5,
+    estimatedCatalogAOV: 85,
     priceArchitecture: {
-      p10Price: 38,
-      medianSkuPrice: 68,
-      meanSkuPrice: 72,
-      p90Price: 125,
-      maxSkuPrice: 165,
+      minPrice: 30,
+      p10Price: 45,
+      medianSkuPrice: 75,
+      meanSkuPrice: 82,
+      p90Price: 135,
+      maxSkuPrice: 180,
     },
-    detectedOfferMechanisms: [
-      'Multi-Pack / Kit SKUs',
-      'Tiered Price Ladder (P90/P50 > 1.6x)',
-      'Free Shipping Threshold Bar',
-      'Slide-Out Upsell Cart',
-    ],
-    dataCoverageTier: tier,
+    detectedOfferMechanisms: ['Multi-Pack / Kit SKUs', 'Free Shipping Threshold Bar'],
+    dataCoverageTier: coverageTier,
     sampleProducts: [],
   }
 }
