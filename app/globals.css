@@ -1,0 +1,67 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  /* Classic Light Institutional Theme Tokens */
+  --color-bg:             #FAFAFA;  /* Alabaster institutional background */
+  --color-surface:        #FFFFFF;  /* Pure white executive cards */
+  --color-surface-2:      #F8FAFC;  /* Subtle elevated slate-50 layer */
+  --color-surface-3:      #F1F5F9;  /* Inset slate-100 container */
+  --color-border:         #E2E8F0;  /* Hairline 1px border */
+  --color-border-strong:  #CBD5E1;  /* Emphasized border */
+
+  /* Deep slate institutional typography */
+  --color-text:           #0F172A;  /* Slate-900 primary text */
+  --color-text-muted:     #475569;  /* Slate-600 secondary text */
+  --color-text-faint:     #94A3B8;  /* Slate-400 faint text */
+  --color-text-inverse:   #FFFFFF;
+
+  /* Classic Slate / Navy / Indigo accents */
+  --color-accent:         #0F172A;  /* Deep slate executive CTA */
+  --color-accent-hover:   #1E293B;  /* Slate-800 */
+  --color-accent-dim:     #F1F5F9;
+
+  /* Status Colors */
+  --color-danger:         #DC2626;  /* Red-600 */
+  --color-danger-dim:     #FEF2F2;
+  --color-warning:        #D97706;  /* Amber-600 */
+  --color-warning-dim:    #FFFBEB;
+  --color-success:        #16A34A;  /* Green-600 */
+  --color-success-dim:    #F0FDF4;
+
+  /* CQI Grade Tiers */
+  --color-grade-a:        #059669;  /* 85–100: Asset Compounder */
+  --color-grade-b:        #2563EB;  /* 70–84: Efficiency Opportunity */
+  --color-grade-c:        #D97706;  /* 55–69: Signal Contaminated */
+  --color-grade-d:        #EA580C;  /* 40–54: Structurally Leaking */
+  --color-grade-f:        #DC2626;  /* 0–39: Capital Destruction Risk */
+}
+
+body {
+  background-color: #FAFAFA;
+  color: #0F172A;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Smooth universal transition token */
+* {
+  transition-property: color, background-color, border-color, text-decoration-color, fill, stroke, opacity, box-shadow, transform;
+  transition-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  transition-duration: 200ms;
+}
+
+/* Hairline card styling */
+.executive-card {
+  background-color: #FFFFFF;
+  border: 1px solid #E2E8F0;
+  border-radius: 0.75rem;
+  box-shadow: 0 1px 3px 0 rgba(15, 23, 42, 0.03), 0 1px 2px -1px rgba(15, 23, 42, 0.03);
+}
+
+.executive-card:hover {
+  border-color: #CBD5E1;
+  box-shadow: 0 4px 6px -1px rgba(15, 23, 42, 0.05), 0 2px 4px -2px rgba(15, 23, 42, 0.05);
+}
