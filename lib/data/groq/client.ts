@@ -93,7 +93,7 @@ function sanitizeObjectNumbers(obj: unknown): unknown {
 export async function runQwenAgenticJson<T>(
   systemPrompt: string,
   userPrompt: string,
-  timeoutMs = 25000
+  timeoutMs = 18000
 ): Promise<{ data: T | null; modelUsed: string; liveSuccess: boolean; reasoningTrace?: string }> {
   const apiKey = getNvidiaApiKey() || getGroqApiKey()
   if (!apiKey) {
@@ -106,17 +106,17 @@ export async function runQwenAgenticJson<T>(
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
-    const payload = {
+    // Tier 1: Fast non-thinking structured JSON extraction (~3.5–5.5s)
+    let payload: Record<string, unknown> = {
       model: modelUsed,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.6,
-      top_p: 0.95,
-      max_tokens: 8192,
-      chat_template_kwargs: { enable_thinking: true },
-      reasoning_budget: 4096,
+      temperature: 0.2,
+      top_p: 0.9,
+      max_tokens: 2500,
+      chat_template_kwargs: { enable_thinking: false },
       stream: false,
     }
 
@@ -131,20 +131,22 @@ export async function runQwenAgenticJson<T>(
       signal: controller.signal,
     })
 
-    // If endpoint returns error (HTTP >= 400), e.g. with chat_template_kwargs or reasoning_budget,
-    // automatically retry with standard payload so it is 100% fault-tolerant
+    // If endpoint requires thinking or rejects enable_thinking: false, fallback to lightweight reasoning budget
     if (!response.ok) {
       console.warn(
-        `[NVIDIA NIM Notice] Initial request returned HTTP ${response.status}. Retrying standard payload...`
+        `[NVIDIA NIM Notice] Fast mode returned HTTP ${response.status}. Retrying with lightweight reasoning budget (512 tokens)...`
       )
-      const retryPayload = {
+      payload = {
         model: modelUsed,
         messages: [
           { role: 'system', content: systemPrompt },
           { role: 'user', content: userPrompt },
         ],
-        temperature: 0.3,
-        max_tokens: 4096,
+        temperature: 0.2,
+        top_p: 0.9,
+        max_tokens: 2500,
+        chat_template_kwargs: { enable_thinking: true },
+        reasoning_budget: 512,
         stream: false,
       }
       response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
@@ -154,9 +156,33 @@ export async function runQwenAgenticJson<T>(
           'Content-Type': 'application/json',
           Accept: 'application/json',
         },
-        body: JSON.stringify(retryPayload),
+        body: JSON.stringify(payload),
         signal: controller.signal,
       })
+
+      // If still not ok, fallback to standard payload
+      if (!response.ok) {
+        payload = {
+          model: modelUsed,
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: userPrompt },
+          ],
+          temperature: 0.2,
+          max_tokens: 2500,
+          stream: false,
+        }
+        response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
+          method: 'POST',
+          headers: {
+            Authorization: `Bearer ${apiKey}`,
+            'Content-Type': 'application/json',
+            Accept: 'application/json',
+          },
+          body: JSON.stringify(payload),
+          signal: controller.signal,
+        })
+      }
     }
 
     clearTimeout(timeoutId)
@@ -187,6 +213,8 @@ export async function runQwenAgenticJson<T>(
 
   return { data: null, modelUsed, liveSuccess: false }
 }
+
+export const runNvidiaJsonExtraction = runQwenAgenticJson
 
 interface GroqScaleAssessmentResponse {
   estimatedTier?: 'tier1_enterprise' | 'mid_market_growth' | 'emerging_dtc' | string

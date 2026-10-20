@@ -233,7 +233,8 @@ export async function POST(req: NextRequest) {
       pillars,
       storefront,
       techScan,
-      benchmark
+      benchmark,
+      groqAssessment?.dynamicCompetitor
     )
     const totalRecoverableMonthlyMargin = leaks.reduce(
       (sum, l) => sum + l.monthlyLossDollars,

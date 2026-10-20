@@ -245,31 +245,39 @@ async function runDeepForensicTest() {
   log('STAGE 2: LIVE GOOGLE AI MODE, WEB SERP & AI TEXT PARSER TRACE')
   log('='.repeat(80))
 
-  log(`[2.1] Fetching Google AI Mode & Web Discovery via fetchGoogleSearchAndCheckScale...`)
+  log(`[2.1] Fetching Google AI Mode & Web Discovery via fetchGoogleSearchAndCheckScale (Parallel 2-Call)...`)
   const searchStart = Date.now()
-  const searchSummary = await fetchGoogleSearchAndCheckScale(targetDomain, 100000, 25000)
+  const searchSummary = await fetchGoogleSearchAndCheckScale(
+    targetDomain,
+    100000,
+    25000,
+    0,
+    null,
+    brandName || 'Beardbrand',
+    "Men's Premium Grooming & Skin Formulations",
+    "Beard Oil, Beard Balm, Utility Wash, Grooming Kits"
+  )
   const searchLatency = Date.now() - searchStart
 
   log(`[2.1 Result] Latency: ${searchLatency}ms`)
   log(`- Apify Actor Executed: ${searchSummary.actorUsed || 'unknown'}`)
   log(`- AI Presence Status: ${searchSummary.aiPresenceStatus}`)
+  log(`- Google AI Mode Success: ${searchSummary.googleAiModeSuccess ?? 'N/A'}`)
   log(`- Public Revenue Evidence Detected: ${searchSummary.publicRevenueEvidence || 'Storefront & ad signals only'}`)
   log(`- Detected Floor Revenue: $${(searchSummary.detectedPublicFloorRevenue || 0).toLocaleString()}/mo`)
   log(`- Review Sentiment Score: ${searchSummary.reviewSentimentScore}/100`)
   log(`- Cited Sources Count: ${searchSummary.citedSources?.length || 0}`)
 
-  log(`\n[2.2 The 4 Google AI Mode Intelligence Query Answers]`)
-  if (searchSummary.rawAiAnswers) {
-    log(`- Q1 (Scale, Revenue & Customer Base):`)
-    log(`  "${(searchSummary.rawAiAnswers.q1Scale || 'N/A').slice(0, 300)}..."`)
-    log(`- Q2 (Customer Reviews & Sentiment):`)
-    log(`  "${(searchSummary.rawAiAnswers.q2Reviews || 'N/A').slice(0, 300)}..."`)
-    log(`- Q3 (Direct Brand Competitors):`)
-    log(`  "${(searchSummary.rawAiAnswers.q3Competitors || 'N/A').slice(0, 300)}..."`)
-    log(`- Q4 (2026 Industry Report Benchmarks):`)
-    log(`  "${(searchSummary.rawAiAnswers.q4IndustryReport || 'N/A').slice(0, 300)}..."`)
-  } else {
-    log(`- Raw AI Answers Block: Not separated or unavailable`)
+  log(`\n[2.2 The Parallel Google AI Mode Intelligence (Call A & Call B)]`)
+  if (searchSummary.brandAndReviewsAiText || searchSummary.rawAiAnswers?.q1Scale) {
+    log(`- Call A (Scale, Customer Base, Reviews & Competitors):`)
+    const aText = searchSummary.brandAndReviewsAiText || searchSummary.rawAiAnswers?.q1Scale || 'N/A'
+    log(`  "${aText.slice(0, 350)}..."`)
+  }
+  if (searchSummary.industryBenchmarksAiText || searchSummary.rawAiAnswers?.q4IndustryReport) {
+    log(`- Call B (2026 Category Benchmarks):`)
+    const bText = searchSummary.industryBenchmarksAiText || searchSummary.rawAiAnswers?.q4IndustryReport || 'N/A'
+    log(`  "${bText.slice(0, 350)}..."`)
   }
 
   log(`\n[2.3 Cleaned AI / Web Summary Text (First 500 Chars)]`)
@@ -369,22 +377,22 @@ async function runDeepForensicTest() {
   log(`[3.2 Result] Latency: ${discoveryLatency}ms | ok=${discovery.ok}`)
 
   log(`\n[3.3 AI Brand & Customer Profile]`)
-  log(`- AI Presence Status: ${discovery.aiBrandAndCustomerProfile.aiPresenceStatus}`)
-  log(`- Google AI Overview Summary: "${discovery.aiBrandAndCustomerProfile.googleAiOverviewSummary}"`)
-  log(`- Customer Demographics: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.targetDemographics}`)
-  log(`- Price Positioning: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.pricePositioning}`)
-  log(`- Primary Buying Trigger: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.primaryBuyingTrigger}`)
-  log(`- Repeat Purchase Driver: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.repeatPurchaseDriver}`)
-  log(`- Churn & Refund Risk: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.churnAndRefundRiskFactor}`)
-  log(`- SKU Catalog Assessment: ${discovery.aiBrandAndCustomerProfile.skuCatalogAssessment}`)
+  log(`- AI Presence Status: ${discovery.aiBrandAndCustomerProfile?.aiPresenceStatus || 'N/A'}`)
+  log(`- Google AI Overview Summary: "${discovery.aiBrandAndCustomerProfile?.googleAiOverviewSummary || 'N/A'}"`)
+  log(`- Customer Demographics: ${discovery.aiBrandAndCustomerProfile?.customerBaseProfile?.targetDemographics || 'N/A'}`)
+  log(`- Price Positioning: ${discovery.aiBrandAndCustomerProfile?.customerBaseProfile?.pricePositioning || 'N/A'}`)
+  log(`- Primary Buying Trigger: ${discovery.aiBrandAndCustomerProfile?.customerBaseProfile?.primaryBuyingTrigger || 'N/A'}`)
+  log(`- Repeat Purchase Driver: ${discovery.aiBrandAndCustomerProfile?.customerBaseProfile?.repeatPurchaseDriver || 'N/A'}`)
+  log(`- Churn & Refund Risk: ${discovery.aiBrandAndCustomerProfile?.customerBaseProfile?.churnAndRefundRiskFactor || 'N/A'}`)
+  log(`- SKU Catalog Assessment: ${discovery.aiBrandAndCustomerProfile?.skuCatalogAssessment || 'N/A'}`)
 
   // Customer Review Intelligence
   const cri = discovery.aiBrandAndCustomerProfile.customerReviewIntelligence || discovery.customerReviewIntelligence
   log(`\n[3.3b Customer Reviews & Brand Reputation in Customer Eyes]`)
   if (cri) {
-    log(`- Aggregated Star Rating: ${cri.aggregatedStarRating}`)
-    log(`- Overall Sentiment Score: ${cri.overallSentimentScore}/100`)
-    log(`- Estimated Total Reviews: ${cri.estimatedTotalReviews.toLocaleString()}`)
+    log(`- Aggregated Star Rating: ${cri.aggregatedStarRating ?? 'null (Not Disclosed)'}`)
+    log(`- Overall Sentiment Score: ${cri.overallSentimentScore !== null ? cri.overallSentimentScore + '/100' : 'null'}`)
+    log(`- Estimated Total Reviews: ${cri.estimatedTotalReviews !== null ? cri.estimatedTotalReviews.toLocaleString() : 'null'}`)
     log(`- Quality & Repeat Verdict: "${cri.customerQualityVerdict}"`)
     log(`- Top Customer Praises:`)
     cri.topCustomerPraises.forEach((p, idx) => log(`    ${idx + 1}. "${p}"`))
@@ -398,9 +406,18 @@ async function runDeepForensicTest() {
   const df = discovery.discoveredFields
   log(`- Vertical: ${df.vertical} (${df.subNicheName})`)
   log(`- Source: ${df.sourceLabel}`)
-  log(`- Monthly Revenue: $${df.monthlyRevenue.value.toLocaleString()}/mo (Range: $${df.monthlyRevenue.rangeMin.toLocaleString()} - $${df.monthlyRevenue.rangeMax.toLocaleString()} | Confidence: ${df.monthlyRevenue.confidence})`)
+  const revStr = df.monthlyRevenue.value !== null ? `$${df.monthlyRevenue.value.toLocaleString()}/mo` : 'null (Not Publicly Disclosed in Google AI Mode)'
+  const revRange = (df.monthlyRevenue.rangeMin !== null && df.monthlyRevenue.rangeMax !== null && df.monthlyRevenue.rangeMin !== undefined && df.monthlyRevenue.rangeMax !== undefined)
+    ? `Range: $${df.monthlyRevenue.rangeMin.toLocaleString()} - $${df.monthlyRevenue.rangeMax.toLocaleString()} | `
+    : ''
+  log(`- Monthly Revenue: ${revStr} (${revRange}Confidence: ${df.monthlyRevenue.confidence})`)
   log(`  Explanation: ${df.monthlyRevenue.sourceExplanation}`)
-  log(`- Monthly Ad Spend: $${df.monthlyAdSpend.value.toLocaleString()}/mo (Range: $${df.monthlyAdSpend.rangeMin.toLocaleString()} - $${df.monthlyAdSpend.rangeMax.toLocaleString()} | Confidence: ${df.monthlyAdSpend.confidence})`)
+
+  const adStr = df.monthlyAdSpend.value !== null ? `$${df.monthlyAdSpend.value.toLocaleString()}/mo` : 'null (Not Publicly Disclosed in Google AI Mode)'
+  const adRange = (df.monthlyAdSpend.rangeMin !== null && df.monthlyAdSpend.rangeMax !== null && df.monthlyAdSpend.rangeMin !== undefined && df.monthlyAdSpend.rangeMax !== undefined)
+    ? `Range: $${df.monthlyAdSpend.rangeMin.toLocaleString()} - $${df.monthlyAdSpend.rangeMax.toLocaleString()} | `
+    : ''
+  log(`- Monthly Ad Spend: ${adStr} (${adRange}Confidence: ${df.monthlyAdSpend.confidence})`)
   log(`  Explanation: ${df.monthlyAdSpend.sourceExplanation}`)
   log(`- Landed COGS Benchmark: ${df.cogsPct.value}% (${df.cogsPct.sourceExplanation})`)
   log(`- 30-Day Refund Benchmark: ${df.refundRatePct.value}% (${df.refundRatePct.sourceExplanation})`)
@@ -432,18 +449,25 @@ async function runDeepForensicTest() {
   log('STAGE 4: SIMULATE STEP 2 "CONFIRM VS CUSTOM CONFLICT" & FULL CQI AUDIT PIPELINE')
   log('='.repeat(80))
 
-  const discoveredRev = df.monthlyRevenue.value
-  const discoveredAdSpend = df.monthlyAdSpend.value
+  const isRevFoundOnline = df.monthlyRevenue.value !== null && df.monthlyRevenue.foundOnline
+  const baselineRev = isRevFoundOnline ? df.monthlyRevenue.value! : 120000
+  const discoveredAdSpend = df.monthlyAdSpend.value || 40000
 
-  // Simulate user overriding with a 55% lower number
-  const customRevenue = Math.round(discoveredRev * 0.45)
-  const revVariancePct = Math.round(Math.abs((customRevenue - discoveredRev) / discoveredRev) * 100)
+  // Simulate user overriding or entering private revenue
+  const customRevenue = isRevFoundOnline ? Math.round(baselineRev * 0.45) : 85000
+  const revVariancePct = isRevFoundOnline ? Math.round(Math.abs((customRevenue - baselineRev) / baselineRev) * 100) : 0
 
   log(`[4.1 Simulation Setup]`)
-  log(`- Online Discovered Revenue: $${discoveredRev.toLocaleString()}/mo`)
-  log(`- User Entered Custom Revenue: $${customRevenue.toLocaleString()}/mo`)
-  log(`- Computed Variance: -${revVariancePct}% (Exceeds >35% threshold -> triggers Amber Conflict Guard)`)
-  log(`- User Conflict Mode Selected: 'CUSTOM_USER_OVERRIDE' ("Online Data Is Outdated — Use My Custom Number")`)
+  if (isRevFoundOnline) {
+    log(`- Online Discovered Revenue: $${baselineRev.toLocaleString()}/mo`)
+    log(`- User Entered Custom Revenue: $${customRevenue.toLocaleString()}/mo`)
+    log(`- Computed Variance: -${revVariancePct}% (Exceeds >35% threshold -> triggers Amber Conflict Guard)`)
+    log(`- User Conflict Mode Selected: 'CUSTOM_USER_OVERRIDE' ("Online Data Is Outdated — Use My Custom Number")`)
+  } else {
+    log(`- Online Discovered Revenue: null (Private Input Mode - No Conflict Triggered)`)
+    log(`- User Entered Private Revenue: $${customRevenue.toLocaleString()}/mo`)
+    log(`- User Intake Mode: 'CUSTOM_USER_OVERRIDE' (Direct Private Entry)`)
+  }
 
   // Private confirmed inputs with custom override
   const simulatedInputs: PrivateIntakeInputs = {
@@ -456,9 +480,9 @@ async function runDeepForensicTest() {
     adSpendMode: 'CONFIRMED_ONLINE',
     cogsMode: 'CONFIRMED_ONLINE',
     refundMode: 'CONFIRMED_ONLINE',
-    varianceExplanations: [
-      `User entered custom revenue of $${customRevenue.toLocaleString()}/mo (-${revVariancePct}% variance vs online telemetry)`,
-    ],
+    varianceExplanations: isRevFoundOnline
+      ? [`User entered custom revenue of $${customRevenue.toLocaleString()}/mo (-${revVariancePct}% variance vs online telemetry)`]
+      : [`User entered private baseline revenue of $${customRevenue.toLocaleString()}/mo`],
   }
 
   // Realistic In-Flight Qualification MCQs
@@ -526,7 +550,7 @@ async function runDeepForensicTest() {
   // Data Authenticity Score
   const authenticityScore = computeDataAuthenticityScore(
     simulatedInputs,
-    discoveredRev,
+    df.monthlyRevenue.value,
     discoveredAdSpend
   )
   log(`\n[4.4 Data Authenticity & Conflict Ledger]`)
@@ -563,13 +587,29 @@ async function runDeepForensicTest() {
   const { tier: customerQualityTier, description: tierDescription } =
     getCustomerQualityTier(masterCQIScore)
 
+  const dynamicCompProfile = groqAssessment?.dynamicCompetitor || (df?.competitors && df.competitors[0] ? {
+    name: df.competitors[0].name,
+    domain: df.competitors[0].domain,
+    cqiScore: df.competitors[0].cqiScore,
+    aov: df.competitors[0].estimatedAOV,
+    blendedCAC: df.competitors[0].estimatedCAC,
+    bundleRatioPct: 35,
+    activeAdCount: 24,
+    videoAdSharePct: 60,
+    scriptCount: 18,
+    repeatRate90dPct: 38,
+    winningEdgeSummary: df.competitors[0].winningMechanism,
+  } : null)
+
   const leaks = computeMarginLeaks(
     { ...simulatedInputs, ...calibratedInputs },
     financials,
     pillars,
     catalog,
     techScan,
-    benchmark
+    benchmark,
+    dynamicCompProfile,
+    df?.industryReport2026
   )
   const totalRecoverableMonthlyMargin = leaks.reduce((s, l) => s + l.monthlyLossDollars, 0)
 

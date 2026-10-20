@@ -36,6 +36,9 @@ export interface GoogleSerpSummary {
   parsedOverview: ParsedAiOverview
   realityCheck: RealityCheckResult
   googleAiModeRawText?: string
+  brandAndReviewsAiText?: string
+  industryBenchmarksAiText?: string
+  googleAiModeSuccess?: boolean
   rawAiAnswers?: {
     q1Scale?: string
     q2Reviews?: string
@@ -142,130 +145,174 @@ export function evaluateUniversalBlunderGuard(params: {
   }
 }
 
+async function runSingleGoogleAiModeCall(
+  query: string,
+  keyOffset: number,
+  timeoutMs = 20000
+): Promise<{ data: unknown[] | null; actor: string }> {
+  // Attempt 1: litescrape~google-ai-mode with maxRequests: 1 & datasetOutput: true (Fast 6s timeout so any 429 or queue stall fails over immediately)
+  try {
+    const res = await runApifyActor<unknown>(
+      'litescrape~google-ai-mode',
+      {
+        q: query,
+        gl: 'us',
+        hl: 'en',
+        device: 'desktop',
+        timeout: 25,
+        maxRequests: 1,
+        datasetOutput: true,
+      },
+      6000,
+      keyOffset
+    )
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      return { data: res.data, actor: 'litescrape~google-ai-mode' }
+    }
+  } catch (err) {
+    console.warn(`[Google AI Mode] litescrape~google-ai-mode failed for query "${query.slice(0, 40)}...":`, err)
+  }
+
+  // Attempt 2: Fallback subimpact~google-ai-mode-scraper
+  try {
+    const res = await runApifyActor<unknown>(
+      'subimpact~google-ai-mode-scraper',
+      {
+        queries: [query],
+        backend: 'android',
+        concurrency: 1,
+      },
+      14000,
+      keyOffset
+    )
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      return { data: res.data, actor: 'subimpact~google-ai-mode-scraper' }
+    }
+  } catch (err) {
+    console.warn('[Google AI Mode] subimpact fallback failed:', err)
+  }
+
+  // Attempt 3: Fallback litescrape~google-ai-overview
+  try {
+    const res = await runApifyActor<unknown>(
+      'litescrape~google-ai-overview',
+      {
+        q: query,
+        gl: 'us',
+        hl: 'en',
+        device: 'desktop',
+        timeout: 25,
+        maxRequests: 1,
+        datasetOutput: true,
+      },
+      timeoutMs,
+      keyOffset
+    )
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      return { data: res.data, actor: 'litescrape~google-ai-overview' }
+    }
+  } catch {}
+
+  // Attempt 4: Fallback gauravlabs~google-serp-api
+  try {
+    const res = await runApifyActor<unknown>(
+      'gauravlabs~google-serp-api',
+      {
+        queries: [query],
+        gl: 'us',
+        hl: 'en',
+      },
+      20000,
+      keyOffset
+    )
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      return { data: res.data, actor: 'gauravlabs~google-serp-api' }
+    }
+  } catch {}
+
+  // Attempt 5: Fallback litescrape~google-search
+  try {
+    const res = await runApifyActor<unknown>(
+      'litescrape~google-search',
+      {
+        q: query,
+        gl: 'us',
+        hl: 'en',
+        num: 8,
+      },
+      20000,
+      keyOffset
+    )
+    if (res.data && Array.isArray(res.data) && res.data.length > 0) {
+      return { data: res.data, actor: 'litescrape~google-search' }
+    }
+  } catch {}
+
+  return { data: null, actor: 'none' }
+}
+
 export async function fetchGoogleSearchAndCheckScale(
   domain: string,
-  userMonthlyRevenue: number,
-  userAdSpend: number,
+  userMonthlyRevenue = 100000,
+  userAdSpend = 25000,
   activeAdCount = 0,
   groqAssessment: GroqBrandScaleAssessment | null = null,
   brandName?: string,
-  categoryHint?: string
+  categoryHint?: string,
+  productTypesHint?: string
 ): Promise<GoogleSerpSummary> {
   const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0]
   const cleanBrand = (brandName || cleanDomain.replace(/\.[a-z]+$/, '')).trim()
   const cleanCategory = categoryHint || 'direct-to-consumer commerce'
+  const typesHint = productTypesHint || 'DTC product line'
 
   const rawAiModeItems: unknown[] = []
   const buyerSearchQueries: string[] = []
+  let actorUsed = 'none'
 
-  // 1. Build the 4 Parallel Intelligence Queries
-  const q1Scale = `What is ${cleanDomain} (${cleanBrand}) estimated annual or monthly revenue, website traffic, product category, and typical target customer profile?`
-  const q2Reviews = `What are customer reviews, star ratings, common praises, and customer complaints for ${cleanBrand} (${cleanDomain}) on Trustpilot, Reddit, and review sites?`
-  const q3Competitors = `Who are the top 3 direct e-commerce brand competitors to ${cleanBrand} (${cleanDomain}) and what are their websites and price points?`
-  const q4IndustryReport = `What are the 2026 e-commerce industry report benchmarks for ${cleanCategory} brands including Average Order Value (AOV), Customer Acquisition Cost (CAC), MER, and return rate?`
+  // 1. Build the 2 Targeted Parallel Intelligence Queries
+  // Call A: Brand Scale, Customer Base, Reviews & Direct Competitors
+  const queryA = `${cleanBrand} (${cleanDomain}) ecommerce brand overview: estimated annual or monthly revenue, target customer demographics, customer reviews pros and cons, and top 3 direct ecommerce competitors with website domains`
 
-  // 2. Parallel Execution: Multi-Actor Apify Chain + Fast Native Web Probes
-  let actorUsed = 'native_web_probes'
+  // Call B: 2026 Category & Sub-Niche Industry Benchmarks
+  const queryB = `2026 ecommerce industry benchmarks for ${cleanCategory} (${typesHint}) DTC brands: average order value AOV, customer acquisition cost CAC, marketing efficiency ratio MER, gross margin, and return rate`
 
+  // 2. Parallel Execution: Fast Parallel 2-Call Google AI Mode Architecture (Key Offset 0 and Key Offset 1)
   const apifyRunnerPromise = (async () => {
-    // Attempt 1: Primary Google AI Mode Actor (litescrape~google-ai-mode) - 35s
-    try {
-      const res = await runApifyActor<unknown>(
-        'litescrape~google-ai-mode',
-        {
-          q: `What is ${cleanDomain} (${cleanBrand}) estimated revenue, customer reviews, top 3 competitors, and target customer base?`,
-          gl: 'us',
-          hl: 'en',
-          device: 'desktop',
-          timeout: 40,
-          maxRequests: 4,
-          requests: [
-            { q: q1Scale },
-            { q: q2Reviews },
-            { q: q3Competitors },
-            { q: q4IndustryReport },
-          ],
-        },
-        35000
-      )
-      if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-        return { data: res.data, actor: 'litescrape~google-ai-mode' }
+    const [callAResult, callBResult] = await Promise.all([
+      runSingleGoogleAiModeCall(queryA, 0, 25000),
+      runSingleGoogleAiModeCall(queryB, 1, 25000),
+    ])
+
+    const items: unknown[] = []
+    let primaryActor = 'none'
+
+    if (callAResult.data && Array.isArray(callAResult.data)) {
+      primaryActor = callAResult.actor
+      for (const item of callAResult.data) {
+        if (item && typeof item === 'object') {
+          items.push({ ...(item as Record<string, unknown>), querySource: 'callA', queryText: queryA })
+        } else {
+          items.push({ text: String(item), querySource: 'callA', queryText: queryA })
+        }
       }
-    } catch (err) {
-      console.warn('[Google AI Mode] Primary actor litescrape~google-ai-mode failed, trying fallback #1:', err)
     }
 
-    // Attempt 2: Fallback #1 Google AI Mode Actor (subimpact~google-ai-mode-scraper) - 35s
-    try {
-      const res = await runApifyActor<unknown>(
-        'subimpact~google-ai-mode-scraper',
-        {
-          queries: [q1Scale, q2Reviews, q3Competitors, q4IndustryReport],
-          backend: 'android',
-          concurrency: 4,
-        },
-        35000
-      )
-      if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-        return { data: res.data, actor: 'subimpact~google-ai-mode-scraper' }
+    if (callBResult.data && Array.isArray(callBResult.data)) {
+      if (primaryActor === 'none') primaryActor = callBResult.actor
+      for (const item of callBResult.data) {
+        if (item && typeof item === 'object') {
+          items.push({ ...(item as Record<string, unknown>), querySource: 'callB', queryText: queryB })
+        } else {
+          items.push({ text: String(item), querySource: 'callB', queryText: queryB })
+        }
       }
-    } catch (err) {
-      console.warn('[Google AI Mode] Fallback #1 subimpact~google-ai-mode-scraper failed, trying fallback #2:', err)
     }
 
-    // Attempt 3: Fallback #2 Google SERP & Overview Actor (gauravlabs~google-serp-api) - 25s
-    try {
-      const res = await runApifyActor<unknown>(
-        'gauravlabs~google-serp-api',
-        {
-          q: `"${cleanDomain}" OR "${cleanBrand}" revenue OR reviews OR trustpilot OR competitors`,
-          gl: 'us',
-          hl: 'en',
-          num: 10,
-        },
-        25000
-      )
-      if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-        return { data: res.data, actor: 'gauravlabs~google-serp-api' }
-      }
-    } catch (err) {
-      console.warn('[Google AI Mode] Fallback #2 gauravlabs~google-serp-api failed, trying litescrape~google-search:', err)
+    return {
+      data: items.length > 0 ? items : null,
+      actor: primaryActor !== 'none' ? primaryActor : 'native_web_probes',
     }
-
-    // Attempt 4: Fallback #2 Alternative (litescrape~google-search) - 25s
-    try {
-      const res = await runApifyActor<unknown>(
-        'litescrape~google-search',
-        {
-          q: `"${cleanDomain}" OR "${cleanBrand}" revenue OR reviews OR trustpilot OR competitors`,
-          gl: 'us',
-          hl: 'en',
-          num: 10,
-        },
-        25000
-      )
-      if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-        return { data: res.data, actor: 'litescrape~google-search' }
-      }
-    } catch {}
-
-    // Attempt 5: Fallback #3 Official Apify Google Search Scraper - 22s
-    try {
-      const res = await runApifyActor<unknown>(
-        'apify~google-search-scraper',
-        {
-          queries: `"${cleanDomain}" OR "${cleanBrand}" revenue OR reviews OR competitors`,
-          resultsPerPage: 10,
-          maxPagesPerQuery: 1,
-        },
-        22000
-      )
-      if (res.data && Array.isArray(res.data) && res.data.length > 0) {
-        return { data: res.data, actor: 'apify~google-search-scraper' }
-      }
-    } catch {}
-
-    return { data: null, actor: 'native_web_probes' }
   })()
 
   // Native Fast Web Probes (<2200ms)
@@ -416,6 +463,9 @@ export async function fetchGoogleSearchAndCheckScale(
     parsedOverview,
     realityCheck,
     googleAiModeRawText: parsedOverview.normalizedText,
+    brandAndReviewsAiText: parsedOverview.brandAndReviewsAiText,
+    industryBenchmarksAiText: parsedOverview.industryBenchmarksAiText,
+    googleAiModeSuccess: parsedOverview.googleAiModeSuccess,
     rawAiAnswers: parsedOverview.rawAiAnswers,
     actorUsed,
   }

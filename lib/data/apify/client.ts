@@ -8,7 +8,8 @@ export interface ApifyRunResult<T> {
 export async function runApifyActor<T>(
   actorId: string,
   input: Record<string, unknown>,
-  timeoutMs = 30000
+  timeoutMs = 30000,
+  keyOffset = 0
 ): Promise<ApifyRunResult<T>> {
   const keys = getApifyKeys()
   if (!keys || keys.length === 0) {
@@ -18,7 +19,8 @@ export async function runApifyActor<T>(
 
   const cleanActorId = actorId.replace(/^['"]|['"]$/g, '').replace('/', '~')
 
-  for (let i = 0; i < keys.length; i++) {
+  for (let step = 0; step < keys.length; step++) {
+    const i = (step + keyOffset) % keys.length
     const apiKey = keys[i]
     const controller = new AbortController()
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)

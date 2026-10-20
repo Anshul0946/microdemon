@@ -16,6 +16,9 @@ export interface ParsedAiOverview {
   citedSources: CitedSource[]
   aiPresenceStatus: AiPresenceStatus
   actorUsed?: string
+  brandAndReviewsAiText?: string
+  industryBenchmarksAiText?: string
+  googleAiModeSuccess?: boolean
   rawAiAnswers?: {
     q1Scale?: string
     q2Reviews?: string
@@ -93,6 +96,8 @@ export function parseGoogleAiModeResponse(
 ): ParsedAiOverview {
   const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0]
   const textBlocks: string[] = []
+  const callATextBlocks: string[] = []
+  const callBTextBlocks: string[] = []
   const storeMetaDescriptionBlocks: string[] = []
   const sourcesMap = new Map<string, string>()
 
@@ -249,6 +254,13 @@ export function parseGoogleAiModeResponse(
         if (itemCombined.trim()) {
           textBlocks.push(itemCombined.trim())
 
+          const querySource = (itemObj.querySource || '') as string
+          if (querySource === 'callA') {
+            callATextBlocks.push(itemCombined.trim())
+          } else if (querySource === 'callB') {
+            callBTextBlocks.push(itemCombined.trim())
+          }
+
           // Categorize into 4 intelligence queries
           const qLower = itemQuery.toLowerCase()
           const combinedLower = itemCombined.toLowerCase()
@@ -264,6 +276,20 @@ export function parseGoogleAiModeResponse(
         }
       }
     }
+  }
+
+  const brandAndReviewsAiText = callATextBlocks.join('\n\n').trim()
+  const industryBenchmarksAiText = callBTextBlocks.join('\n\n').trim()
+  const googleAiModeSuccess =
+    callATextBlocks.length > 0 ||
+    callBTextBlocks.length > 0 ||
+    (textBlocks.length > 0 && actorUsed !== 'native_web_probes')
+
+  if (!rawAiAnswers.q4IndustryReport && industryBenchmarksAiText) {
+    rawAiAnswers.q4IndustryReport = industryBenchmarksAiText
+  }
+  if (!rawAiAnswers.q1Scale && brandAndReviewsAiText) {
+    rawAiAnswers.q1Scale = brandAndReviewsAiText
   }
 
   // Never overwrite real AI Mode text with store meta description
@@ -292,6 +318,9 @@ export function parseGoogleAiModeResponse(
     citedSources,
     aiPresenceStatus,
     actorUsed,
+    brandAndReviewsAiText,
+    industryBenchmarksAiText,
+    googleAiModeSuccess,
     rawAiAnswers,
     extractedMetrics,
   }

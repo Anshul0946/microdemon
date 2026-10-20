@@ -51,9 +51,9 @@ export interface SkuAnalytics {
 }
 
 export interface CustomerReviewIntelligence {
-  overallSentimentScore: number // 0–100
-  aggregatedStarRating: number // e.g. 4.6 (out of 5.0)
-  estimatedTotalReviews: number
+  overallSentimentScore: number | null // 0–100
+  aggregatedStarRating: number | null // e.g. 4.6 (out of 5.0)
+  estimatedTotalReviews: number | null
   topCustomerPraises: string[] // 3 items
   topCustomerComplaints: string[] // 3 items
   customerQualityVerdict: string
@@ -77,10 +77,10 @@ export interface AiBrandAndCustomerProfile {
 
 export interface DiscoveredRevenueMetric {
   foundOnline: boolean
-  value: number
-  rangeMin: number
-  rangeMax: number
-  confidence: 'HIGH' | 'MEDIUM' | 'ESTIMATED_FROM_STORE_SIGNALS'
+  value: number | null
+  rangeMin?: number | null
+  rangeMax?: number | null
+  confidence: 'HIGH' | 'MEDIUM' | 'ESTIMATED_FROM_STORE_SIGNALS' | 'NOT_PUBLIC'
   sourceExplanation: string
 }
 

@@ -68,38 +68,70 @@ export default function ConfigurePage() {
     const fields = data.discoveredFields
     if (fields) {
       setVertical(fields.vertical)
-      setCustomRevenue(fields.monthlyRevenue.value)
-      setCustomAdSpend(fields.monthlyAdSpend.value)
+      if (fields.monthlyRevenue?.value !== null && fields.monthlyRevenue?.foundOnline) {
+        setCustomRevenue(fields.monthlyRevenue.value)
+        setRevenueMode('CONFIRMED_ONLINE')
+      } else {
+        setCustomRevenue(120000)
+        setRevenueMode('CUSTOM_USER_OVERRIDE')
+      }
+
+      if (fields.monthlyAdSpend?.value !== null && fields.monthlyAdSpend?.foundOnline) {
+        setCustomAdSpend(fields.monthlyAdSpend.value)
+        setAdSpendMode('CONFIRMED_ONLINE')
+      } else {
+        setCustomAdSpend(40000)
+        setAdSpendMode('CUSTOM_USER_OVERRIDE')
+      }
+
       setCustomCogs(fields.cogsPct.value)
       setCustomRefund(fields.refundRatePct.value)
     }
   }
 
-  const discoveredRev = discovery?.discoveredFields?.monthlyRevenue?.value || 120000
-  const discoveredAdSpend = discovery?.discoveredFields?.monthlyAdSpend?.value || 40000
+  const isRevFoundOnline = Boolean(
+    discovery?.discoveredFields?.monthlyRevenue?.foundOnline &&
+    discovery?.discoveredFields?.monthlyRevenue?.value !== null
+  )
+  const discoveredRev = discovery?.discoveredFields?.monthlyRevenue?.value ?? null
+
+  const isAdSpendFoundOnline = Boolean(
+    discovery?.discoveredFields?.monthlyAdSpend?.foundOnline &&
+    discovery?.discoveredFields?.monthlyAdSpend?.value !== null
+  )
+  const discoveredAdSpend = discovery?.discoveredFields?.monthlyAdSpend?.value ?? null
+
   const discoveredCogs = discovery?.discoveredFields?.cogsPct?.value || 24
   const discoveredRefund = discovery?.discoveredFields?.refundRatePct?.value || 6
 
-  // Variance calculations
-  const revDeltaPct = Math.round(Math.abs((customRevenue - discoveredRev) / Math.max(1, discoveredRev)) * 100)
-  const isRevConflict = revenueMode !== 'CONFIRMED_ONLINE' && revDeltaPct > 35
+  // Variance calculations (Active only when verified online data exists)
+  const revDeltaPct = (isRevFoundOnline && discoveredRev !== null)
+    ? Math.round(Math.abs((customRevenue - discoveredRev) / Math.max(1, discoveredRev)) * 100)
+    : 0
+  const isRevConflict = isRevFoundOnline && revenueMode !== 'CONFIRMED_ONLINE' && revDeltaPct > 35
 
-  const adSpendDeltaPct = Math.round(Math.abs((customAdSpend - discoveredAdSpend) / Math.max(1, discoveredAdSpend)) * 100)
-  const isAdSpendConflict = adSpendMode !== 'CONFIRMED_ONLINE' && adSpendDeltaPct > 35
+  const adSpendDeltaPct = (isAdSpendFoundOnline && discoveredAdSpend !== null)
+    ? Math.round(Math.abs((customAdSpend - discoveredAdSpend) / Math.max(1, discoveredAdSpend)) * 100)
+    : 0
+  const isAdSpendConflict = isAdSpendFoundOnline && discoveredAdSpend !== null && adSpendMode !== 'CONFIRMED_ONLINE' && adSpendDeltaPct > 35
 
   // Effective values passed to next step
   const effectiveRevenue =
-    revenueMode === 'CONFIRMED_ONLINE'
-      ? discoveredRev
-      : revenueMode === 'BLENDED'
-      ? Math.round((discoveredRev + customRevenue) / 2)
+    isRevFoundOnline && discoveredRev !== null
+      ? revenueMode === 'CONFIRMED_ONLINE'
+        ? discoveredRev
+        : revenueMode === 'BLENDED'
+        ? Math.round((discoveredRev + customRevenue) / 2)
+        : customRevenue
       : customRevenue
 
   const effectiveAdSpend =
-    adSpendMode === 'CONFIRMED_ONLINE'
-      ? discoveredAdSpend
-      : adSpendMode === 'BLENDED'
-      ? Math.round((discoveredAdSpend + customAdSpend) / 2)
+    isAdSpendFoundOnline && discoveredAdSpend !== null
+      ? adSpendMode === 'CONFIRMED_ONLINE'
+        ? discoveredAdSpend
+        : adSpendMode === 'BLENDED'
+        ? Math.round((discoveredAdSpend + customAdSpend) / 2)
+        : customAdSpend
       : customAdSpend
 
   const effectiveCogs = cogsMode === 'CONFIRMED_ONLINE' ? discoveredCogs : customCogs
@@ -382,38 +414,57 @@ export default function ConfigurePage() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="space-y-1">
               <span className="text-xs font-mono text-slate-400 uppercase font-semibold">Parameter 2 of 5</span>
-              <h3 className="text-sm font-bold text-slate-900">Estimated Monthly Gross Revenue</h3>
+              <div className="flex items-center gap-2 flex-wrap">
+                <h3 className="text-sm font-bold text-slate-900">Estimated Monthly Gross Revenue</h3>
+                {isRevFoundOnline && discoveredRev !== null ? (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-emerald-50 text-emerald-800 border border-emerald-200">
+                    Found via Google AI Mode: ${discoveredRev.toLocaleString()}/mo
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-700 border border-slate-300">
+                    🔒 Not Publicly Disclosed in Google AI Mode — Private Input Required
+                  </span>
+                )}
+              </div>
               <p className="text-xs text-slate-500">
-                {discovery?.discoveredFields?.monthlyRevenue?.sourceExplanation || 'Derived from catalog volume & store signals'}
+                {discovery?.discoveredFields?.monthlyRevenue?.sourceExplanation || 'Private revenue baseline required for exact unit economic modeling.'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setRevenueMode('CONFIRMED_ONLINE')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
-                  revenueMode === 'CONFIRMED_ONLINE'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                ✓ Confirm ${discoveredRev.toLocaleString()}/mo
-              </button>
-              <button
-                type="button"
-                onClick={() => setRevenueMode('CUSTOM_USER_OVERRIDE')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
-                  revenueMode !== 'CONFIRMED_ONLINE'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                ✏️ Enter Custom Value
-              </button>
+              {isRevFoundOnline && discoveredRev !== null ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setRevenueMode('CONFIRMED_ONLINE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
+                      revenueMode === 'CONFIRMED_ONLINE'
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ✓ Confirm ${discoveredRev.toLocaleString()}/mo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setRevenueMode('CUSTOM_USER_OVERRIDE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
+                      revenueMode !== 'CONFIRMED_ONLINE'
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ✏️ Enter Custom Value
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs font-mono text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                  Private Input Mode
+                </span>
+              )}
             </div>
           </div>
 
-          {revenueMode !== 'CONFIRMED_ONLINE' && (
+          {(revenueMode !== 'CONFIRMED_ONLINE' || !isRevFoundOnline) && (
             <div className="space-y-4 pt-2">
               <div className="flex justify-between items-center">
                 <span className="text-xs font-semibold text-slate-700">Custom Monthly Revenue:</span>
@@ -432,7 +483,7 @@ export default function ConfigurePage() {
               />
 
               {/* DYNAMIC CONFLICT & AUTHENTICITY GUARD (AMBER RESOLUTION BOX) */}
-              {isRevConflict && (
+              {isRevConflict && discoveredRev !== null && (
                 <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 space-y-3">
                   <div className="flex items-start gap-2">
                     <span className="text-amber-600 font-bold text-sm">⚠️</span>
@@ -491,43 +542,57 @@ export default function ConfigurePage() {
           <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
             <div className="space-y-1">
               <span className="text-xs font-mono text-slate-400 uppercase font-semibold">Parameter 3 of 5</span>
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
                 <h3 className="text-sm font-bold text-slate-900">Monthly Paid Media Ad Spend</h3>
-                <span
-                  className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
-                    isHealthyMER ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
-                  }`}
-                >
-                  Implied MER: {currentMER}x {isHealthyMER ? '(Healthy)' : '(Under Pressure)'}
-                </span>
+                {isAdSpendFoundOnline && discoveredAdSpend !== null ? (
+                  <span
+                    className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-bold ${
+                      isHealthyMER ? 'bg-emerald-100 text-emerald-800' : 'bg-amber-100 text-amber-800'
+                    }`}
+                  >
+                    Implied MER: {currentMER}x {isHealthyMER ? '(Healthy)' : '(Under Pressure)'}
+                  </span>
+                ) : (
+                  <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold bg-slate-100 text-slate-700 border border-slate-300">
+                    🔒 Not Publicly Disclosed — Private Input Required
+                  </span>
+                )}
               </div>
               <p className="text-xs text-slate-500">
                 {discovery?.discoveredFields?.monthlyAdSpend?.sourceExplanation || 'Modeled from live Meta ad density'}
               </p>
             </div>
             <div className="flex items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setAdSpendMode('CONFIRMED_ONLINE')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
-                  adSpendMode === 'CONFIRMED_ONLINE'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                ✓ Confirm ${discoveredAdSpend.toLocaleString()}/mo
-              </button>
-              <button
-                type="button"
-                onClick={() => setAdSpendMode('CUSTOM_USER_OVERRIDE')}
-                className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
-                  adSpendMode !== 'CONFIRMED_ONLINE'
-                    ? 'bg-slate-900 text-white shadow-sm'
-                    : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
-                }`}
-              >
-                ✏️ Enter Custom Value
-              </button>
+              {isAdSpendFoundOnline && discoveredAdSpend !== null ? (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setAdSpendMode('CONFIRMED_ONLINE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
+                      adSpendMode === 'CONFIRMED_ONLINE'
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ✓ Confirm ${discoveredAdSpend.toLocaleString()}/mo
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setAdSpendMode('CUSTOM_USER_OVERRIDE')}
+                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold font-mono transition-colors ${
+                      adSpendMode !== 'CONFIRMED_ONLINE'
+                        ? 'bg-slate-900 text-white shadow-sm'
+                        : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
+                    }`}
+                  >
+                    ✏️ Enter Custom Value
+                  </button>
+                </>
+              ) : (
+                <span className="text-xs font-mono text-slate-500 bg-slate-100 px-3 py-1.5 rounded-lg border border-slate-200">
+                  Private Input Mode
+                </span>
+              )}
             </div>
           </div>
 
@@ -550,7 +615,7 @@ export default function ConfigurePage() {
               />
 
               {/* DYNAMIC CONFLICT & AUTHENTICITY GUARD (AMBER RESOLUTION BOX) */}
-              {isAdSpendConflict && (
+              {isAdSpendConflict && discoveredAdSpend !== null && (
                 <div className="p-4 rounded-xl bg-amber-50 border border-amber-200 text-amber-950 space-y-3">
                   <div className="flex items-start gap-2">
                     <span className="text-amber-600 font-bold text-sm">⚠️</span>

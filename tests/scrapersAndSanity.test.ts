@@ -157,6 +157,7 @@ describe('Universal 3-Layer Telemetry Blunder Guard (Zero Hardcoded Dictionary)'
     const originalFetch = global.fetch
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
+      text: async () => '',
       json: async () => [{
         text: 'The company generated $600 million in annual revenue in 2024 with over $25M spent on digital marketing.'
       }],
@@ -176,6 +177,7 @@ describe('Universal 3-Layer Telemetry Blunder Guard (Zero Hardcoded Dictionary)'
     const originalFetch = global.fetch
     global.fetch = vi.fn().mockResolvedValue({
       ok: true,
+      text: async () => '',
       json: async () => [],
     })
 

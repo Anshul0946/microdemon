@@ -43,7 +43,8 @@ interface RawAdRecord {
 export async function fetchMetaAdTelemetry(
   brandNameOrDomain: string,
   monthlyAdSpend = 25000,
-  brandScale: 'SMB' | 'MID_MARKET' | 'ENTERPRISE' = 'MID_MARKET'
+  brandScale: 'SMB' | 'MID_MARKET' | 'ENTERPRISE' = 'MID_MARKET',
+  timeoutMs = 12000
 ): Promise<MetaAdTelemetry> {
   // Extract brand keyword cleanly from domain (e.g. allbirds.com -> allbirds, gymshark.com -> gymshark)
   const cleanBrand = brandNameOrDomain
@@ -62,11 +63,12 @@ export async function fetchMetaAdTelemetry(
     count: 35,
   }
 
-  // Single well-formed request with a generous 28,000ms timeout
+  // Well-formed request with controlled timeout
   const primaryResult = await runApifyActor<RawAdRecord>(
     'curious_coder~facebook-ads-library-scraper',
     input,
-    28000
+    timeoutMs,
+    2 // Use Apify key 3 (index 2) for zero collision with Google AI Mode
   )
 
   const adItems = primaryResult.data

@@ -8,6 +8,8 @@ import {
   MarginLeak,
   PrivateIntakeInputs,
   CustomerReviewIntelligence,
+  DynamicCompetitorProfile,
+  IndustryReport2026,
 } from './types'
 
 export function computeFinancialMetrics(
@@ -220,14 +222,24 @@ export function computeMarginLeaks(
   pillars: PillarScores,
   shopifyData: ScrapedCatalogMetrics,
   techScan: TechScanResult,
-  benchmark: VerticalBenchmark
+  benchmark: VerticalBenchmark,
+  dynamicCompetitor?: DynamicCompetitorProfile | null,
+  industryReport2026?: IndustryReport2026 | null
 ): MarginLeak[] {
   // Raw Leak 1: Meta Advantage+ Creative Concentration & Midday Fatigue Bleed
   const wasteFactor = Math.max(0.12, Math.min(0.34, (100 - pillars.adSignal) / 260))
   const rawLeak1 = Math.round(inputs.monthlyAdSpend * wasteFactor)
 
+  // Dynamic Leader Benchmark for Leak 2
+  const leaderAov = dynamicCompetitor?.aov || industryReport2026?.benchmarkAOV || benchmark.leaderBrand.aov
+  const leaderName = dynamicCompetitor?.name
+    ? `${dynamicCompetitor.name} Benchmark`
+    : industryReport2026?.subNicheName
+    ? `${industryReport2026.subNicheName} 2026 Top-Decile Benchmark`
+    : `${benchmark.leaderBrand.name} Tier Benchmark`
+
   // Raw Leak 2: Single-SKU AOV Compression & Mobile Variant Drop-Off
-  const aovGap = Math.max(12, benchmark.leaderBrand.aov - financials.effectiveAOV)
+  const aovGap = Math.max(12, leaderAov - financials.effectiveAOV)
   const rawLeak2 = Math.round(
     financials.monthlyOrders * aovGap * (benchmark.grossMarginPct / 100) * 0.28
   )
@@ -283,7 +295,7 @@ export function computeMarginLeaks(
     title: 'Single-SKU AOV Compression & Mobile Variant Drop-Off',
     monthlyLossDollars: finalLeak2,
     severity: finalLeak2 > 20000 ? 'CRITICAL' : 'HIGH',
-    exposedDiagnosis: `Storefront traffic converts predominantly on single-unit entry items ($${financials.effectiveAOV} AOV vs $${benchmark.leaderBrand.aov} for ${benchmark.leaderBrand.name}), leaving $${aovGap} in unextracted cart value per transaction. Furthermore, ${shopifyData.highFrictionVariantPct}% of products exhibit high-friction variant selectors causing mobile abandonment.`,
+    exposedDiagnosis: `Storefront traffic converts predominantly on single-unit entry items ($${financials.effectiveAOV} AOV vs $${leaderAov} for ${leaderName}), leaving $${aovGap} in unextracted cart value per transaction. Furthermore, ${shopifyData.highFrictionVariantPct}% of products exhibit high-friction variant selectors causing mobile abandonment.`,
     lockedRemediationSteps: [
       'Deploy custom 3-step regimen builder or bundle packs on the primary PDP with automated tier discounts (Buy 2 Save 15%, Buy 3 Save 25%).',
       'Replace native multi-dropdown variant pickers on mobile with 1-click horizontal swatch pills to eradicate mobile checkout hesitation.',
@@ -309,8 +321,8 @@ export function computeMarginLeaks(
 
 export function computeDataAuthenticityScore(
   inputs: PrivateIntakeInputs,
-  discoveredRev?: number,
-  _discoveredAdSpend?: number
+  discoveredRev?: number | null,
+  _discoveredAdSpend?: number | null
 ): import('./types').DataAuthenticityScore {
   const isCustomRev = inputs.revenueMode === 'CUSTOM_USER_OVERRIDE'
   const isCustomAdSpend = inputs.adSpendMode === 'CUSTOM_USER_OVERRIDE'
