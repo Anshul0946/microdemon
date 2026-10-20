@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest'
-import { getApifyKeys, getNextApifyKey, getGroqApiKey } from '../lib/config/keys'
+import { getApifyKeys, getNextApifyKey, getGroqApiKey, getNvidiaApiKey } from '../lib/config/keys'
 import { VERTICAL_BENCHMARKS, EcommerceVertical } from '../lib/config/benchmarks'
 
 describe('Configuration & Benchmarks Verification', () => {
@@ -19,10 +19,12 @@ describe('Configuration & Benchmarks Verification', () => {
     }
   })
 
-  it('loads Groq API key', () => {
+  it('loads NVIDIA or Groq API key', () => {
+    const nvidiaKey = getNvidiaApiKey()
     const groqKey = getGroqApiKey()
-    expect(groqKey).toBeTruthy()
-    expect(groqKey?.startsWith('gsk_')).toBe(true)
+    expect(nvidiaKey || groqKey).toBeTruthy()
+    const key = nvidiaKey || groqKey
+    expect(key?.startsWith('nvapi-') || key?.startsWith('gsk_')).toBe(true)
   })
 
   it('contains all 6 e-commerce vertical benchmarks with complete data', () => {

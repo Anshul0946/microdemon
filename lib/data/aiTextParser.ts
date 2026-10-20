@@ -57,10 +57,12 @@ const EXCLUDED_HOSTS = [
   'crunchbase',
 ]
 
+import { decodeHtmlEntities } from '@/lib/utils/formatters'
+
 export function normalizeRawText(rawText: string): string {
   if (!rawText || typeof rawText !== 'string') return ''
 
-  return rawText
+  return decodeHtmlEntities(rawText)
     // Remove citation brackets like [1], [2], [12]
     .replace(/\[\d+\]/g, '')
     // Remove markdown formatting

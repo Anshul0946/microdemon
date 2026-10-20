@@ -4,7 +4,7 @@ import { validateShopifyStore } from '@/lib/data/shopifyValidator'
 import { runStep1StoreDiscovery } from '@/lib/data/discovery'
 
 export const dynamic = 'force-dynamic'
-export const maxDuration = 45
+export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   try {

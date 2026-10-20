@@ -21,13 +21,19 @@ export function computeCrossRelations(
     financials.monthlyOrders * Math.max(5, (100 - bundleRatio) * 0.18)
   )
 
+  const hasVerifiedAds = metaAds.adsVerified && metaAds.activeAdCount > 0
+
   const insight1: CrossRelationInsight = {
     id: 'ad_signal_x_offer_architecture',
-    title: 'Discount-Led Ad Signal ↔ Low-AOV Single SKU Landing',
+    title: hasVerifiedAds
+      ? 'Discount-Led Ad Signal ↔ Low-AOV Single SKU Landing'
+      : 'Storefront Offer Posture ↔ Implied Paid Acquisition Margin',
     primaryPillars: 'Pillar 2 (Ad Signal) × Pillar 3 (Offer Architecture)',
-    description: `${discountAdPct}% of active Meta ads leverage promotional or discount keywords, yet only ${bundleRatio}% of catalog SKUs are configured as bundles. Traffic arriving on low-margin entry SKUs compresses First-Order Net Margin to ${netContribution > 0 ? '$' + netContribution : '-$' + Math.abs(netContribution)}/order.`,
+    description: hasVerifiedAds
+      ? `${discountAdPct}% of active Meta ads leverage promotional or discount keywords, yet only ${bundleRatio}% of catalog SKUs are configured as bundles. Traffic arriving on low-margin entry SKUs compresses First-Order Net Margin to ${netContribution > 0 ? '$' + netContribution : '-$' + Math.abs(netContribution)}/order.`
+      : `Zero public Meta ad creatives currently indexed; acquisition posture evaluated via on-site offer architecture (${bundleRatio}% bundle SKUs) and baseline MER (${financials.currentMER.toFixed(1)}x). Landing paid traffic on unbundled single SKUs without multi-pack incentives compresses First-Order Net Margin to ${netContribution > 0 ? '$' + netContribution : '-$' + Math.abs(netContribution)}/order.`,
     dollarImpact: adOfferLoss,
-    severity: netContribution < 0 || discountAdPct > 40 ? 'CRITICAL' : 'HIGH',
+    severity: netContribution < 0 || (hasVerifiedAds && discountAdPct > 40) ? 'CRITICAL' : 'HIGH',
     formulaExplanation: `When promotional ad traffic lands on single units without bundle incentives, first-order contribution margin collapses by an estimated -$${adOfferLoss.toLocaleString()}/mo.`,
   }
 
@@ -64,11 +70,15 @@ export function computeCrossRelations(
 
   const insight3: CrossRelationInsight = {
     id: 'asc_fatigue_x_refund_rate',
-    title: 'ASC Creative Concentration ↔ Post-Purchase Buyer Friction',
+    title: hasVerifiedAds
+      ? 'ASC Creative Concentration ↔ Post-Purchase Buyer Friction'
+      : 'On-Site Acquisition Posture ↔ Post-Purchase Refund Risk',
     primaryPillars: 'Pillar 2 (Ad Signal) × Pillar 1 (Unit Economics)',
-    description: `${ascRisk}% concentration in repetitive ad hooks indicates that Meta Advantage+ is repeatedly serving the same 1–2 angles to cold audiences. Over-promising product claims in fatiguing creatives correlated with higher return rates, driving ~$${avoidableRefundDollars.toLocaleString()}/mo in preventable refund losses.`,
+    description: hasVerifiedAds
+      ? `${ascRisk}% concentration in repetitive ad hooks indicates that Meta Advantage+ is repeatedly serving the same 1–2 angles to cold audiences. Over-promising product claims in fatiguing creatives correlated with higher return rates, driving ~$${avoidableRefundDollars.toLocaleString()}/mo in preventable refund losses.`
+      : `With zero public ad campaigns indexed, creative concentration risk is neutral; however, single-SKU acquisition without bundle cushions risks driving expectation mismatches, contributing to ~$${avoidableRefundDollars.toLocaleString()}/mo in baseline return losses.`,
     dollarImpact: avoidableRefundDollars,
-    severity: ascRisk > 50 ? 'HIGH' : 'MODERATE',
+    severity: hasVerifiedAds && ascRisk > 50 ? 'HIGH' : 'MODERATE',
     formulaExplanation: `Creative concentration traps force Meta algorithms to seek conversions by over-indexing on aggressive discount hooks that attract low-intent, refund-prone buyers.`,
   }
 

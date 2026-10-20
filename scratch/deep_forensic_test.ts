@@ -11,6 +11,7 @@ import {
   synthesizeExecutiveBriefing,
   runStep1StoreDiscovery,
   resolveActiveQwenOrGroqModel,
+  getFallbackScaleAssessment,
 } from '../lib/data'
 import { VERTICAL_BENCHMARKS, EcommerceVertical } from '../lib/config/benchmarks'
 import {
@@ -26,7 +27,7 @@ import { computeCrossRelations } from '../lib/cqi/crossRelations'
 import { buildChatGptVerifyUrl, buildFullAuditPrompt } from '../lib/utils/chatgptVerify'
 import { generateExecutivePdf } from '../lib/utils/pdfGenerator'
 import { AuditReportResult, PrivateIntakeInputs } from '../lib/cqi/types'
-import { getGroqApiKey } from '../lib/config/keys'
+import { getGroqApiKey, getNvidiaApiKey } from '../lib/config/keys'
 import { extractFinancialMetricsFromText } from '../lib/data/aiTextParser'
 
 // 1. Ensure .env.local keys are loaded into process.env if running outside Next.js
@@ -65,7 +66,8 @@ async function runDeepForensicTest() {
   log(`Node Environment: Node ${process.version}`)
   log(`Platform: ${process.platform}`)
   log(`Apify API Keys Present: ${Boolean(process.env.APIFY_API_KEY_1 || process.env.APIFY_API_KEY_2 || process.env.APIFY_API_KEY_3)}`)
-  log(`Groq API Key Present: ${Boolean(process.env.GROQ_API_KEY)}`)
+  log(`NVIDIA NIM API Key Present: ${Boolean(getNvidiaApiKey())}`)
+  log(`Groq API Key Present: ${Boolean(getGroqApiKey())}`)
   log('================================================================================')
 
   let targetDomain = 'beardbrand.com'
@@ -328,19 +330,19 @@ async function runDeepForensicTest() {
   }
 
   // ============================================================================
-  // STAGE 3: LIVE GROQ QWEN AGENTIC DISCOVERY & STEP 2 CONFIRMATION PAYLOAD
+  // STAGE 3: LIVE NVIDIA NIM AGENTIC DISCOVERY & STEP 2 CONFIRMATION PAYLOAD
   // ============================================================================
   log('\n' + '='.repeat(80))
-  log('STAGE 3: LIVE GROQ QWEN AGENTIC DISCOVERY & STEP 2 CONFIRMATION PAYLOAD')
+  log('STAGE 3: LIVE NVIDIA NIM AGENTIC DISCOVERY & STEP 2 CONFIRMATION PAYLOAD')
   log('='.repeat(80))
 
-  const groqKey = getGroqApiKey()
-  let resolvedModel = 'qwen/qwen3.8-27b'
-  if (groqKey) {
-    resolvedModel = await resolveActiveQwenOrGroqModel(groqKey)
-    log(`[3.1 Groq Model Discovery] Resolved Active Model: ${resolvedModel}`)
+  const nvidiaKey = getNvidiaApiKey()
+  let resolvedModel = 'nvidia/nemotron-3.5-lightning-30b-a3b'
+  if (nvidiaKey) {
+    resolvedModel = await resolveActiveQwenOrGroqModel(nvidiaKey)
+    log(`[3.1 NVIDIA NIM Model Discovery] Resolved Active Model: ${resolvedModel}`)
   } else {
-    log(`[3.1 Groq Model Discovery] GROQ_API_KEY missing; using calibrated model profile.`)
+    log(`[3.1 NVIDIA NIM Model Discovery] NVIDIA_API_KEY missing; using calibrated model profile.`)
   }
 
   log(`[3.2 Executing runStep1StoreDiscovery("${targetDomain}")...]`)
@@ -460,33 +462,7 @@ async function runDeepForensicTest() {
   const groqAssessment =
     groqAssessmentSettled.status === 'fulfilled'
       ? groqAssessmentSettled.value
-      : {
-          estimatedTier: 'mid_market_growth' as const,
-          estimatedMonthlyRevenueFloor: 120000,
-          estimatedMonthlyAdSpendFloor: 35000,
-          subNicheName: df.subNicheName,
-          dynamicCompetitor: {
-            name: `${successGate.storeTitle} Leader`,
-            domain: `${targetDomain.split('.')[0]}-leader.com`,
-            cqiScore: 84,
-            aov: 78,
-            blendedCAC: 32,
-            bundleRatioPct: 32,
-            activeAdCount: 80,
-            videoAdSharePct: 70,
-            scriptCount: 18,
-            repeatRate90dPct: 38,
-            winningEdgeSummary: 'High-LTV 3-pack bundle architecture with ASC creative hooks.',
-          },
-          live2026SubNicheBenchmarks: {
-            benchmarkAOV: 75,
-            healthyMER: 3.2,
-            healthyBlendedCAC: 32,
-            avgRefundRatePct: 5,
-          },
-          blunderExplanation: 'Calibrated against verified footprint.',
-          evidence: 'DETERMINISTIC_BENCHMARK' as const,
-        }
+      : getFallbackScaleAssessment(targetDomain, validVertical, discovery.metaAds.activeAdCount, true)
 
   log(`\n[4.3 Meta Ad Library Scrape Result]`)
   log(`- Ads Verified Online: ${metaAds.adsVerified}`)

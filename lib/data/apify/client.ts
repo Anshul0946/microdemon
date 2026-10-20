@@ -8,7 +8,7 @@ export interface ApifyRunResult<T> {
 export async function runApifyActor<T>(
   actorId: string,
   input: Record<string, unknown>,
-  timeoutMs = 14000
+  timeoutMs = 30000
 ): Promise<ApifyRunResult<T>> {
   const keys = getApifyKeys()
   if (!keys || keys.length === 0) {
@@ -17,7 +17,6 @@ export async function runApifyActor<T>(
   }
 
   const cleanActorId = actorId.replace(/^['"]|['"]$/g, '').replace('/', '~')
-  const syncTimeoutSec = Math.max(5, Math.ceil(timeoutMs / 1000))
 
   for (let i = 0; i < keys.length; i++) {
     const apiKey = keys[i]
@@ -25,7 +24,7 @@ export async function runApifyActor<T>(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
     try {
-      const url = `https://api.apify.com/v2/acts/${encodeURIComponent(cleanActorId)}/run-sync-get-dataset-items?token=${apiKey}&timeout=${syncTimeoutSec}&memory=256`
+      const url = `https://api.apify.com/v2/acts/${encodeURIComponent(cleanActorId)}/run-sync-get-dataset-items?token=${apiKey}&timeout=28&memory=512`
 
       const response = await fetch(url, {
         method: 'POST',

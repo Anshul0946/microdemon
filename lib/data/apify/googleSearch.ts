@@ -141,7 +141,7 @@ export async function fetchGoogleSearchAndCheckScale(
   activeAdCount = 0,
   groqAssessment: GroqBrandScaleAssessment | null = null,
   brandName?: string,
-  categoryHint?: string
+  _categoryHint?: string
 ): Promise<GoogleSerpSummary> {
   const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0]
   const cleanBrand = (brandName || cleanDomain.replace(/\.[a-z]+$/, '')).trim()
@@ -149,108 +149,122 @@ export async function fetchGoogleSearchAndCheckScale(
   const rawAiModeItems: unknown[] = []
   const buyerSearchQueries: string[] = []
 
-  // 1. Parallel Fast Web Probes (< 1.8s budget): Google Autocomplete + DuckDuckGo HTML + Storefront
-  await Promise.allSettled([
-    // A. Google Autocomplete Buyer Queries
-    fetch(
-      `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(cleanBrand + ' ')}`,
-      { signal: AbortSignal.timeout(1800) }
-    )
-      .then((r) => r.json())
-      .then((data) => {
-        if (Array.isArray(data) && Array.isArray(data[1])) {
-          for (const item of data[1].slice(0, 6)) {
-            if (typeof item === 'string') buyerSearchQueries.push(item)
-          }
-        }
-      })
-      .catch(() => {}),
+  // 1. Parallel Execution: Apify Google Search Scraper + Fast Native Web Probes (DuckDuckGo, Autocomplete, Trustpilot, Storefront)
+  const searchQuery = `"${cleanDomain}" OR "${cleanBrand}" revenue OR reviews OR competitors`
 
-    // B. DuckDuckGo Lite HTML Search Snippets
-    fetch(
-      `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanDomain + ' revenue traffic competitors')}`,
-      {
+  const [, apifySettled] = await Promise.allSettled([
+    Promise.allSettled([
+      // A. Google Autocomplete Buyer Queries
+      fetch(
+        `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(cleanBrand + ' ')}`,
+        { signal: AbortSignal.timeout(1800) }
+      )
+        .then((r) => r.json())
+        .then((data) => {
+          if (Array.isArray(data) && Array.isArray(data[1])) {
+            for (const item of data[1].slice(0, 6)) {
+              if (typeof item === 'string') buyerSearchQueries.push(item)
+            }
+          }
+        })
+        .catch(() => {}),
+
+      // B. DuckDuckGo Lite HTML Search Snippets (< 1800ms)
+      fetch(
+        `https://html.duckduckgo.com/html/?q=${encodeURIComponent(cleanDomain + ' revenue traffic competitors')}`,
+        {
+          headers: {
+            'User-Agent':
+              'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+            Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          },
+          signal: AbortSignal.timeout(2200),
+        }
+      )
+        .then((r) => r.text())
+        .then((html) => {
+          const snippetRegex = /<a class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi
+          let match: RegExpExecArray | null
+          while ((match = snippetRegex.exec(html)) !== null && rawAiModeItems.length < 5) {
+            const text = match[1].replace(/<[^>]+>/g, '').trim()
+            if (text) {
+              rawAiModeItems.push({ text })
+            }
+          }
+        })
+        .catch(() => {}),
+
+      // C. Store Homepage Meta Description & JSON-LD
+      fetch(`https://${cleanDomain}`, {
         headers: {
-          'User-Agent':
-            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
-          Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
         },
-        signal: AbortSignal.timeout(2200),
-      }
-    )
-      .then((r) => r.text())
-      .then((html) => {
-        const snippetRegex = /<a class="result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/gi
-        let match: RegExpExecArray | null
-        while ((match = snippetRegex.exec(html)) !== null && rawAiModeItems.length < 5) {
-          const text = match[1].replace(/<[^>]+>/g, '').trim()
-          if (text) {
-            rawAiModeItems.push({ text })
+        signal: AbortSignal.timeout(2000),
+      })
+        .then((r) => r.text())
+        .then((html) => {
+          const metaMatch = html.match(
+            /<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["'](.*?)["']/i
+          )
+          if (metaMatch && metaMatch[1]) {
+            rawAiModeItems.push({ text: metaMatch[1].trim() })
           }
-        }
-      })
-      .catch(() => {}),
+        })
+        .catch(() => {}),
 
-    // C. Store Homepage Meta Description & JSON-LD
-    fetch(`https://${cleanDomain}`, {
-      headers: {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      },
-      signal: AbortSignal.timeout(2000),
-    })
-      .then((r) => r.text())
-      .then((html) => {
-        const metaMatch = html.match(
-          /<meta\s+(?:name|property)=["'](?:description|og:description)["']\s+content=["'](.*?)["']/i
-        )
-        if (metaMatch && metaMatch[1]) {
-          rawAiModeItems.push({ text: metaMatch[1].trim() })
-        }
+      // D. Trustpilot JSON-LD Live Probe
+      fetch(`https://www.trustpilot.com/review/${cleanDomain}`, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        },
+        signal: AbortSignal.timeout(2000),
       })
-      .catch(() => {}),
+        .then((r) => r.text())
+        .then((html) => {
+          const jsonMatches = html.match(/<script type=["']application\/ld\+json["']>([\s\S]*?)<\/script>/gi)
+          if (jsonMatches) {
+            for (const tag of jsonMatches) {
+              const raw = tag.replace(/<\/?script[^>]*>/gi, '').trim()
+              try {
+                const parsed = JSON.parse(raw)
+                if (parsed.aggregateRating) {
+                  rawAiModeItems.push({
+                    text: `Trustpilot rating: ${parsed.aggregateRating.ratingValue}/5 from ${parsed.aggregateRating.reviewCount} customer reviews for ${cleanDomain}.`,
+                  })
+                }
+              } catch {}
+            }
+          }
+        })
+        .catch(() => {}),
+    ]),
+
+    // 2. Apify Official Google Search Scraper (22,000ms timeout)
+    runApifyActor<Record<string, unknown>>(
+      'apify~google-search-scraper',
+      {
+        queries: searchQuery,
+        resultsPerPage: 10,
+        maxPagesPerQuery: 1,
+      },
+      22000
+    ).catch(() => ({ data: null, evidence: 'BENCHMARK_ESTIMATED' as const }))
   ])
 
-  // 2. Apify Google AI Mode Scraper (if enabled or needed)
-  if (process.env.ENABLE_APIFY_SEARCH === 'true' || rawAiModeItems.length < 2) {
-    try {
-      const queryPrompt = [
-        `What is ${cleanDomain} (${cleanBrand}) estimated monthly or annual revenue, traffic, customer reviews, and brand reputation?`,
-        `What ecommerce category is ${cleanDomain} (${cleanBrand}) in, who is their target customer base, and who are their top 3 direct Shopify competitors?`,
-        `What are the 2026 ecommerce industry report benchmarks for ${categoryHint || 'ecommerce'} average order value AOV, CAC, MER, and refund rate?`,
-      ].join('\n')
-
-      // Primary Actor: apify~google-ai-mode-scraper
-      let apifyResult = await runApifyActor<Record<string, unknown>>(
-        'apify~google-ai-mode-scraper',
-        { queries: queryPrompt },
-        6000
-      )
-
-      // Fallback 1: apify~google-ai-overviews-scraper
-      if (!apifyResult.data || apifyResult.data.length === 0) {
-        apifyResult = await runApifyActor<Record<string, unknown>>(
-          'apify~google-ai-overviews-scraper',
-          { queries: queryPrompt },
-          5000
-        )
-      }
-
-      // Fallback 2: subimpact~google-ai-mode-scraper
-      if (!apifyResult.data || apifyResult.data.length === 0) {
-        apifyResult = await runApifyActor<Record<string, unknown>>(
-          'subimpact~google-ai-mode-scraper',
-          { queries: queryPrompt },
-          5000
-        )
-      }
-
-      if (apifyResult.data && Array.isArray(apifyResult.data)) {
-        for (const item of apifyResult.data) {
-          rawAiModeItems.push(item)
+  // Ingest Apify results if fulfilled
+  if (apifySettled.status === 'fulfilled' && apifySettled.value.data && Array.isArray(apifySettled.value.data)) {
+    for (const item of apifySettled.value.data) {
+      if (Array.isArray(item.organicResults)) {
+        for (const org of item.organicResults as Array<{ title?: string; description?: string; url?: string }>) {
+          if (org.description || org.title) {
+            rawAiModeItems.push({ text: `${org.title || ''}: ${org.description || ''}`, url: org.url })
+          }
         }
+      } else if (item.description || item.snippet) {
+        rawAiModeItems.push({ text: String(item.description || item.snippet), url: (item.url as string) || undefined })
+      } else if (item.text) {
+        rawAiModeItems.push({ text: String(item.text) })
       }
-    } catch {
-      // Safe fallback - continue with fast web backups
     }
   }
 

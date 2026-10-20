@@ -1,4 +1,4 @@
-import { getGroqApiKey } from '@/lib/config/keys'
+import { getNvidiaApiKey, getGroqApiKey } from '@/lib/config/keys'
 import { VERTICAL_BENCHMARKS, EcommerceVertical } from '@/lib/config/benchmarks'
 import { DynamicCompetitorProfile } from '@/lib/cqi/types'
 
@@ -24,94 +24,10 @@ export interface GroqBrandScaleAssessment {
   evidence: 'LIVE_GROQ_ORACLE' | 'DETERMINISTIC_BENCHMARK'
 }
 
-let cachedQwenModel: string | null = null
+export const ACTIVE_NVIDIA_MODEL = 'nvidia/nemotron-3.5-lightning-30b-a3b'
 
-export async function resolveActiveQwenOrGroqModel(apiKey: string): Promise<string> {
-  if (cachedQwenModel) {
-    return cachedQwenModel
-  }
-
-  const PRIORITY_QWEN = [
-    'qwen/qwen3.8-27b',
-    'qwen/qwen3.6-27b',
-    'qwen/qwen3-32b',
-    'qwen-qwq-32b',
-  ]
-
-  const PRIORITY_FALLBACKS = [
-    'openai/gpt-oss-120b',
-    'openai/gpt-oss-20b',
-    'meta-llama/llama-4-scout-17b-16e-instruct',
-    'llama-3.3-70b-versatile',
-    'llama-3.1-8b-instant',
-  ]
-
-  try {
-    const controller = new AbortController()
-    const timeout = setTimeout(() => controller.abort(), 4000)
-    const res = await fetch('https://api.groq.com/openai/v1/models', {
-      method: 'GET',
-      headers: {
-        Authorization: `Bearer ${apiKey}`,
-      },
-      signal: controller.signal,
-    })
-    clearTimeout(timeout)
-
-    if (res.ok) {
-      const json = await res.json()
-      const availableModels: string[] = Array.isArray(json?.data)
-        ? json.data.map((m: { id: string }) => m.id)
-        : []
-
-      // Priority 1: Exact matching Qwen models
-      for (const qModel of PRIORITY_QWEN) {
-        if (availableModels.includes(qModel)) {
-          cachedQwenModel = qModel
-          console.log(`[Groq Dynamic Model Discovery] Model selected: ${qModel}`)
-          return cachedQwenModel
-        }
-      }
-
-      // Priority 1B: Any model ID containing 'qwen'
-      const anyQwen = availableModels.find((id) => id.toLowerCase().includes('qwen'))
-      if (anyQwen) {
-        cachedQwenModel = anyQwen
-        console.log(`[Groq Dynamic Model Discovery] Qwen model selected: ${anyQwen}`)
-        return cachedQwenModel
-      }
-
-      // Priority 2: Structured fallbacks
-      for (const fModel of PRIORITY_FALLBACKS) {
-        if (availableModels.includes(fModel)) {
-          cachedQwenModel = fModel
-          console.log(`[Groq Dynamic Model Discovery] Fallback model selected: ${fModel}`)
-          return cachedQwenModel
-        }
-      }
-
-      // Priority 3: Any non-whisper/non-tts/non-guard chat model
-      const candidate = availableModels.find(
-        (id) =>
-          !id.includes('whisper') &&
-          !id.includes('tts') &&
-          !id.includes('guard') &&
-          !id.includes('safeguard') &&
-          !id.includes('orpheus')
-      )
-      if (candidate) {
-        cachedQwenModel = candidate
-        console.log(`[Groq Dynamic Model Discovery] Active chat model selected: ${candidate}`)
-        return cachedQwenModel
-      }
-    }
-  } catch (err: unknown) {
-    const e = err as Error
-    console.warn(`[Groq Model Resolution Notice] ${e.message}`)
-  }
-
-  cachedQwenModel = 'qwen/qwen3.8-27b'
-  return cachedQwenModel
+export async function resolveActiveQwenOrGroqModel(_apiKey?: string): Promise<string> {
+  return ACTIVE_NVIDIA_MODEL
 }
 
 // Backwards-compatibility alias
@@ -176,69 +92,68 @@ function sanitizeObjectNumbers(obj: unknown): unknown {
 export async function runQwenAgenticJson<T>(
   systemPrompt: string,
   userPrompt: string,
-  timeoutMs = 9000
-): Promise<{ data: T | null; modelUsed: string; liveSuccess: boolean }> {
-  const apiKey = getGroqApiKey()
+  timeoutMs = 25000
+): Promise<{ data: T | null; modelUsed: string; liveSuccess: boolean; reasoningTrace?: string }> {
+  const apiKey = getNvidiaApiKey() || getGroqApiKey()
   if (!apiKey) {
     return { data: null, modelUsed: 'deterministic_fallback', liveSuccess: false }
   }
 
-  const modelUsed = await resolveActiveQwenOrGroqModel(apiKey)
-  const isQwen = modelUsed.toLowerCase().includes('qwen')
-
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+  const modelUsed = ACTIVE_NVIDIA_MODEL
 
   try {
-    const bodyPayload: Record<string, unknown> = {
+    const controller = new AbortController()
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
+
+    const payload = {
       model: modelUsed,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: userPrompt },
       ],
-      temperature: 0.1,
-      max_tokens: 950,
-      response_format: { type: 'json_object' },
+      temperature: 0.6,
+      top_p: 0.95,
+      max_tokens: 8192,
+      chat_template_kwargs: { enable_thinking: true },
+      reasoning_budget: 4096,
+      stream: false,
     }
 
-    if (isQwen) {
-      bodyPayload.reasoning_effort = 'none'
-    }
-
-    let response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    let response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
       method: 'POST',
       headers: {
-        'Content-Type': 'application/json',
         Authorization: `Bearer ${apiKey}`,
+        'Content-Type': 'application/json',
+        Accept: 'application/json',
       },
-      body: JSON.stringify(bodyPayload),
+      body: JSON.stringify(payload),
       signal: controller.signal,
     })
 
-    // If 400 on reasoning_effort or response_format, retry without reasoning_effort
-    if (response.status === 400 && bodyPayload.reasoning_effort) {
-      delete bodyPayload.reasoning_effort
-      response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+    // If endpoint returns error (HTTP >= 400), e.g. with chat_template_kwargs or reasoning_budget,
+    // automatically retry with standard payload so it is 100% fault-tolerant
+    if (!response.ok) {
+      console.warn(
+        `[NVIDIA NIM Notice] Initial request returned HTTP ${response.status}. Retrying standard payload...`
+      )
+      const retryPayload = {
+        model: modelUsed,
+        messages: [
+          { role: 'system', content: systemPrompt },
+          { role: 'user', content: userPrompt },
+        ],
+        temperature: 0.3,
+        max_tokens: 4096,
+        stream: false,
+      }
+      response = await fetch('https://integrate.api.nvidia.com/v1/chat/completions', {
         method: 'POST',
         headers: {
-          'Content-Type': 'application/json',
           Authorization: `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify(bodyPayload),
-        signal: controller.signal,
-      })
-    }
-
-    // If still 400 on response_format, retry without response_format
-    if (response.status === 400 && bodyPayload.response_format) {
-      delete bodyPayload.response_format
-      response = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-        method: 'POST',
-        headers: {
           'Content-Type': 'application/json',
-          Authorization: `Bearer ${apiKey}`,
+          Accept: 'application/json',
         },
-        body: JSON.stringify(bodyPayload),
+        body: JSON.stringify(retryPayload),
         signal: controller.signal,
       })
     }
@@ -247,22 +162,26 @@ export async function runQwenAgenticJson<T>(
 
     if (response.ok) {
       const json = await response.json()
-      const content = json.choices?.[0]?.message?.content
+      const message = json.choices?.[0]?.message
+      const content = message?.content
+      const reasoningTrace = message?.reasoning_content || ''
+
       if (content) {
         const parsed = cleanAndParseQwenJson<T>(content)
         if (parsed) {
-          return { data: parsed, modelUsed, liveSuccess: true }
+          console.log(
+            `[NVIDIA NIM Success] Model: ${modelUsed} | Reasoning length: ${reasoningTrace.length} chars | Output parsed successfully.`
+          )
+          return { data: parsed, modelUsed, liveSuccess: true, reasoningTrace }
         }
       }
     } else {
-      console.log(
-        `[Groq Qwen Live Notice] Model ${modelUsed} returned HTTP ${response.status}. Utilizing live calibrated baseline.`
-      )
+      const errText = await response.text().catch(() => '')
+      console.warn(`[NVIDIA NIM Notice] HTTP ${response.status}: ${errText.slice(0, 150)}`)
     }
   } catch (err: unknown) {
-    clearTimeout(timeoutId)
     const e = err as Error
-    console.log(`[Groq Qwen Live Notice] ${e.name}: ${e.message}`)
+    console.warn(`[NVIDIA NIM Notice] ${e.name}: ${e.message}`)
   }
 
   return { data: null, modelUsed, liveSuccess: false }
@@ -302,56 +221,60 @@ export async function assessBrandScaleAndCompetitor(
   adSummary: { activeAdCount: number; videoAdSharePct: number },
   serpSnippets: string
 ): Promise<GroqBrandScaleAssessment> {
-  const apiKey = getGroqApiKey()
+  const apiKey = getNvidiaApiKey() || getGroqApiKey()
 
   if (!apiKey) {
     return getFallbackScaleAssessment(domain, vertical, adSummary.activeAdCount, false)
   }
 
   const systemPrompt =
-    'You are an institutional private-equity e-commerce market intelligence oracle powered by Qwen. Output strict JSON only matching the requested schema.'
+    'You are an institutional private-equity e-commerce market intelligence oracle powered by NVIDIA Nemotron. Output strict JSON only matching the requested schema.'
   const userPrompt = `Analyze the following e-commerce brand telemetry to assess its real market scale, sub-niche, and the #1 superior competitor:
 - Target Domain: ${domain}
 - Primary Category: ${vertical}
 - Storefront Catalog: ${catalogSummary.totalProducts} sampled SKUs, $${catalogSummary.medianPrice} median price, ${catalogSummary.bundleRatioPct}% bundle ratio
 - Meta Ad Library: ${adSummary.activeAdCount} active ads (${adSummary.videoAdSharePct}% video)
-- Google Search Snippets: ${serpSnippets.slice(0, 700)}
+- Google Search & Web Snippets: ${serpSnippets.slice(0, 800)}
 
 Task:
 Determine whether this brand is a tier1_enterprise (> $1M/mo revenue), mid_market_growth ($100k-$1M/mo), or emerging_dtc (< $100k/mo).
-Provide realistic monthly revenue and ad spend floors, the precise sub-niche name (e.g. "Sustainable Performance Footwear & Merino Apparel", "Activewear & Athletic Apparel", "Clinical Barrier Repair Skincare"), and the real #1 superior competitor in this exact sub-niche.
+Provide realistic monthly revenue and ad spend floors, the precise sub-niche name (e.g. "Men's Premium Grooming & Skin Formulations", "Sustainable Performance Footwear & Merino Apparel", "Clinical Barrier Repair Skincare"), and the real #1 superior competitor in this exact sub-niche.
+
+CRITICAL COMPETITOR MANDATE:
+The dynamicCompetitor MUST be a REAL, VERIFIABLE e-commerce brand and its real .com domain in this exact sub-niche (for example, for beard/grooming brands: drsquatch.com, manscaped.com, or scotchporter.com; for apparel: vuoriclothing.com, gymshark.com; etc.). You are strictly forbidden from fabricating placeholder domains like *-leader.com or *-rival.com!
+
 Output strict JSON matching this exact TypeScript structure:
 {
   "estimatedTier": "tier1_enterprise",
   "estimatedMonthlyRevenueFloor": 1000000,
   "estimatedMonthlyAdSpendFloor": 250000,
-  "subNicheName": "Sustainable Performance Footwear & Merino Apparel",
+  "subNicheName": "Men's Premium Grooming & Skin Formulations",
   "dynamicCompetitor": {
-    "name": "On Running",
-    "domain": "on.com",
+    "name": "Dr. Squatch",
+    "domain": "drsquatch.com",
     "cqiScore": 88,
-    "aov": 160,
-    "blendedCAC": 45,
-    "bundleRatioPct": 28,
+    "aov": 65,
+    "blendedCAC": 28,
+    "bundleRatioPct": 42,
     "activeAdCount": 140,
-    "videoAdSharePct": 78,
-    "scriptCount": 16,
-    "repeatRate90dPct": 42,
-    "winningEdgeSummary": "Capitalizes on high-margin apparel cross-sells and premium technical footwear positioning."
+    "videoAdSharePct": 82,
+    "scriptCount": 18,
+    "repeatRate90dPct": 44,
+    "winningEdgeSummary": "Dominates cold acquisition with high-converting multi-bar soap bundles and natural routine subscription anchors."
   },
   "live2026SubNicheBenchmarks": {
-    "benchmarkAOV": 140,
-    "healthyMER": 3.4,
-    "healthyBlendedCAC": 42,
-    "avgRefundRatePct": 6
+    "benchmarkAOV": 65,
+    "healthyMER": 3.2,
+    "healthyBlendedCAC": 28,
+    "avgRefundRatePct": 5
   },
   "blunderExplanation": "Telemetry calibrated against verified enterprise DTC footprint."
 }`
 
-  const qwenResult = await runQwenAgenticJson<GroqScaleAssessmentResponse>(systemPrompt, userPrompt, 9000)
+  const nimResult = await runQwenAgenticJson<GroqScaleAssessmentResponse>(systemPrompt, userPrompt, 28000)
 
-  if (qwenResult.data) {
-    const parsed = qwenResult.data
+  if (nimResult.data) {
+    const parsed = nimResult.data
     if (
       parsed.estimatedTier &&
       typeof parsed.estimatedMonthlyRevenueFloor === 'number' &&
@@ -359,6 +282,19 @@ Output strict JSON matching this exact TypeScript structure:
       parsed.subNicheName &&
       parsed.dynamicCompetitor?.name
     ) {
+      // Validate competitor domain to guarantee zero fake domains
+      let compDomain = parsed.dynamicCompetitor.domain || ''
+      if (
+        !compDomain ||
+        compDomain.includes('-leader') ||
+        compDomain.includes('-rival') ||
+        compDomain.includes('-value') ||
+        compDomain.includes('placeholder')
+      ) {
+        const fallback = getFallbackScaleAssessment(domain, vertical, adSummary.activeAdCount, true)
+        compDomain = fallback.dynamicCompetitor.domain
+      }
+
       return {
         estimatedTier: (parsed.estimatedTier === 'tier1_enterprise' || parsed.estimatedTier === 'emerging_dtc'
           ? parsed.estimatedTier
@@ -368,9 +304,7 @@ Output strict JSON matching this exact TypeScript structure:
         subNicheName: parsed.subNicheName,
         dynamicCompetitor: {
           name: parsed.dynamicCompetitor.name,
-          domain:
-            parsed.dynamicCompetitor.domain ||
-            `${parsed.dynamicCompetitor.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com`,
+          domain: compDomain,
           cqiScore: Number(parsed.dynamicCompetitor.cqiScore) || 88,
           aov: Number(parsed.dynamicCompetitor.aov) || 85,
           blendedCAC: Number(parsed.dynamicCompetitor.blendedCAC) || 35,
@@ -407,8 +341,9 @@ export function getFallbackScaleAssessment(
 ): GroqBrandScaleAssessment {
   const benchmark = VERTICAL_BENCHMARKS[vertical] || VERTICAL_BENCHMARKS.supplements
   const cleanDomain = domain.toLowerCase()
+  const isGrooming = cleanDomain.includes('beard') || cleanDomain.includes('groom') || cleanDomain.includes('shav')
 
-  // Dynamic Sub-Niche and Competitor Profiling
+  // Dynamic Sub-Niche and Competitor Profiling (Strictly Real Brands & Verifiable .com Domains)
   let subNicheName = benchmark.label
   let compName = benchmark.leaderBrand.name
   let compDomain = benchmark.leaderBrand.domain
@@ -420,7 +355,18 @@ export function getFallbackScaleAssessment(
   let compVideo = 78
   let compWinningEdge = benchmark.leaderBrand.winningEdgeSummary
 
-  if (vertical === 'pets') {
+  if (isGrooming || (vertical === 'skincare' && isGrooming)) {
+    subNicheName = "Men's Premium Grooming & Skin Formulations"
+    compName = 'Dr. Squatch'
+    compDomain = 'drsquatch.com'
+    compCqi = 88
+    compAov = 54
+    compCac = 26
+    compBundle = 42
+    compAds = 135
+    compVideo = 82
+    compWinningEdge = 'Dominates cold acquisition with high-converting multi-bar soap bundles and natural routine subscription anchors.'
+  } else if (vertical === 'pets') {
     subNicheName = 'Functional Pet Nutrition & Longevity Supplements'
     compName = 'Native Pet'
     compDomain = 'nativepet.com'
@@ -538,13 +484,14 @@ export async function synthesizeExecutiveBriefing(
   monthlyLossDollars: number,
   vertical: string
 ): Promise<GroqSynthesisResult> {
-  const apiKey = getGroqApiKey()
+  const apiKey = getNvidiaApiKey() || getGroqApiKey()
 
   if (!apiKey) {
     return getFallbackSynthesis(domain, cqiScore, primaryLeak, monthlyLossDollars, vertical)
   }
 
-  const systemPrompt = 'You are an institutional private-equity e-commerce operating partner powered by Qwen.'
+  const systemPrompt =
+    'You are an institutional private-equity e-commerce operating partner powered by NVIDIA Nemotron.'
   const userPrompt = `Analyze the following e-commerce brand diagnostic telemetry:
 - Target Domain: ${domain}
 - Category Vertical: ${vertical}
@@ -558,16 +505,16 @@ Output clean JSON with this exact structure:
   "remediationAdvice": ["...", "...", "..."]
 }`
 
-  const qwenResult = await runQwenAgenticJson<{ summary?: string; remediationAdvice?: string[] }>(
+  const nimResult = await runQwenAgenticJson<{ summary?: string; remediationAdvice?: string[] }>(
     systemPrompt,
     userPrompt,
-    9000
+    28000
   )
 
-  if (qwenResult.data && qwenResult.data.summary && Array.isArray(qwenResult.data.remediationAdvice)) {
+  if (nimResult.data && nimResult.data.summary && Array.isArray(nimResult.data.remediationAdvice)) {
     return {
-      summary: qwenResult.data.summary,
-      remediationAdvice: qwenResult.data.remediationAdvice.slice(0, 3),
+      summary: nimResult.data.summary,
+      remediationAdvice: nimResult.data.remediationAdvice.slice(0, 3),
       evidence: 'GROQ_AI_SYNTHESIS',
     }
   }

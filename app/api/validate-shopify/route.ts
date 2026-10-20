@@ -3,6 +3,7 @@ import { validateDomainSyntax } from '@/lib/utils/validation'
 import { validateShopifyStore } from '@/lib/data/shopifyValidator'
 
 export const dynamic = 'force-dynamic'
+export const maxDuration = 60
 
 export async function POST(req: NextRequest) {
   try {

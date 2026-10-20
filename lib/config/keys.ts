@@ -50,6 +50,10 @@ export function getNextApifyKey(): string | null {
   return key
 }
 
+export function getNvidiaApiKey(): string | null {
+  return sanitizeKey(process.env.NVIDIA_API_KEY)
+}
+
 export function getGroqApiKey(): string | null {
-  return sanitizeKey(process.env.GROQ_API_KEY)
+  return getNvidiaApiKey() || sanitizeKey(process.env.GROQ_API_KEY)
 }

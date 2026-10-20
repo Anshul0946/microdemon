@@ -44,7 +44,7 @@ export interface ScrapedCatalogMetrics {
   }>
 }
 
-const BUNDLE_REGEX = /bundle|pack|kit|set|routine|duo|trio|system|supply|box|collection/i
+const BUNDLE_REGEX = /\b(bundle|pack|kit|set|routine|duo|trio|variety|box)\b/i
 const _SUBSCRIPTION_REGEX = /subscribe|autoship|recurring|refill|monthly|membership/i
 
 export async function scrapeShopifyCatalog(domain: string): Promise<ScrapedCatalogMetrics> {
@@ -183,8 +183,7 @@ export function buildSkuAnalyticsFromProducts(
 
     const isBundle =
       BUNDLE_REGEX.test(title) ||
-      BUNDLE_REGEX.test(pType) ||
-      rawTags.some((t) => BUNDLE_REGEX.test(t))
+      BUNDLE_REGEX.test(pType)
     if (isBundle) {
       bundleSkuCount++
     }

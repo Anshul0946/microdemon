@@ -13,7 +13,7 @@ export default defineConfig(({ mode }) => {
     test: {
       environment: 'jsdom',
       globals: true,
-      testTimeout: 20000,
+      testTimeout: 90000,
       env,
     },
     resolve: {

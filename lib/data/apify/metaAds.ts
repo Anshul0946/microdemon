@@ -52,35 +52,24 @@ export async function fetchMetaAdTelemetry(
     .toLowerCase()
     .trim()
 
-  const adLibraryUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&q=${encodeURIComponent(cleanBrand)}`
+  const adLibraryUrl = `https://www.facebook.com/ads/library/?active_status=active&ad_type=all&country=US&q=${encodeURIComponent(cleanBrand)}&media_type=all`
 
-  // Support inputs for both memo23 and curious_coder actors
   const input = {
-    searchTerms: [cleanBrand],
-    startUrls: [{ url: adLibraryUrl }],
     urls: [{ url: adLibraryUrl }],
-    maxItems: 60,
-    activeStatus: 'active',
+    startUrls: [{ url: adLibraryUrl }],
+    searchTerms: [cleanBrand],
+    maxItems: 35,
+    count: 35,
   }
 
-  // 1. Try primary Cheerio-based actor with 14000ms timeout
+  // Single well-formed request with a generous 28,000ms timeout
   const primaryResult = await runApifyActor<RawAdRecord>(
-    'memo23~facebook-ads-library-scraper-cheerio',
+    'curious_coder~facebook-ads-library-scraper',
     input,
-    14000
+    28000
   )
 
-  let adItems = primaryResult.data
-
-  // 2. If primary returned null or empty, try curious_coder fallback
-  if (!adItems || adItems.length === 0) {
-    const fallbackResult = await runApifyActor<RawAdRecord>(
-      'curious_coder~facebook-ads-library-scraper',
-      input,
-      12000
-    )
-    adItems = fallbackResult.data
-  }
+  const adItems = primaryResult.data
 
   if (adItems && adItems.length > 0) {
     let videoCount = 0
