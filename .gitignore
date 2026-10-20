@@ -21,6 +21,7 @@
 *.pem
 scratch/*.js
 live_e2e_log.txt
+forensic_audit_log.txt
 
 # debug
 npm-debug.log*

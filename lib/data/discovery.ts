@@ -88,10 +88,18 @@ export async function runStep1StoreDiscovery(domain: string): Promise<DiscoveryP
     combinedText.includes('skincare') ||
     combinedText.includes('serum') ||
     combinedText.includes('cream') ||
-    combinedText.includes('cosmetic')
+    combinedText.includes('cosmetic') ||
+    combinedText.includes('beard') ||
+    combinedText.includes('grooming') ||
+    combinedText.includes('haircare') ||
+    combinedText.includes('shaving') ||
+    combinedText.includes('parfum') ||
+    combinedText.includes('balm')
   ) {
     detectedVertical = 'skincare'
-    subNicheName = 'Clean Active Skincare & Dermaceuticals'
+    subNicheName = combinedText.includes('beard') || combinedText.includes('groom')
+      ? "Men's Premium Grooming & Skin Formulations"
+      : 'Clean Active Skincare & Dermaceuticals'
   } else if (
     combinedText.includes('apparel') ||
     combinedText.includes('clothing') ||
@@ -106,10 +114,7 @@ export async function runStep1StoreDiscovery(domain: string): Promise<DiscoveryP
     detectedVertical = 'apparel'
     subNicheName = 'Technical Performance & Athleisure Apparel'
   } else if (
-    combinedText.includes('pet') ||
-    combinedText.includes('dog') ||
-    combinedText.includes('cat') ||
-    combinedText.includes('chew')
+    /\b(pet|pets|dog|dogs|cat|cats|puppy|canine|feline|chews)\b/i.test(combinedText)
   ) {
     detectedVertical = 'pets'
     subNicheName = 'Functional Pet Nutrition & Longevity'
