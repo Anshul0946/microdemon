@@ -251,25 +251,41 @@ async function runDeepForensicTest() {
   const searchLatency = Date.now() - searchStart
 
   log(`[2.1 Result] Latency: ${searchLatency}ms`)
+  log(`- Apify Actor Executed: ${searchSummary.actorUsed || 'unknown'}`)
   log(`- AI Presence Status: ${searchSummary.aiPresenceStatus}`)
   log(`- Public Revenue Evidence Detected: ${searchSummary.publicRevenueEvidence || 'Storefront & ad signals only'}`)
   log(`- Detected Floor Revenue: $${(searchSummary.detectedPublicFloorRevenue || 0).toLocaleString()}/mo`)
   log(`- Review Sentiment Score: ${searchSummary.reviewSentimentScore}/100`)
+  log(`- Cited Sources Count: ${searchSummary.citedSources?.length || 0}`)
 
-  log(`\n[2.2 Cleaned AI / Web Summary Text (First 500 Chars)]`)
+  log(`\n[2.2 The 4 Google AI Mode Intelligence Query Answers]`)
+  if (searchSummary.rawAiAnswers) {
+    log(`- Q1 (Scale, Revenue & Customer Base):`)
+    log(`  "${(searchSummary.rawAiAnswers.q1Scale || 'N/A').slice(0, 300)}..."`)
+    log(`- Q2 (Customer Reviews & Sentiment):`)
+    log(`  "${(searchSummary.rawAiAnswers.q2Reviews || 'N/A').slice(0, 300)}..."`)
+    log(`- Q3 (Direct Brand Competitors):`)
+    log(`  "${(searchSummary.rawAiAnswers.q3Competitors || 'N/A').slice(0, 300)}..."`)
+    log(`- Q4 (2026 Industry Report Benchmarks):`)
+    log(`  "${(searchSummary.rawAiAnswers.q4IndustryReport || 'N/A').slice(0, 300)}..."`)
+  } else {
+    log(`- Raw AI Answers Block: Not separated or unavailable`)
+  }
+
+  log(`\n[2.3 Cleaned AI / Web Summary Text (First 500 Chars)]`)
   const snippet = searchSummary.searchSnippetSummary || searchSummary.parsedOverview.normalizedText || ''
   log(`"${snippet.slice(0, 500)}${snippet.length > 500 ? '...' : ''}"`)
 
-  log(`\n[2.3 Cited Sources & References Extracted]`)
+  log(`\n[2.4 Cited Sources & References Extracted]`)
   if (searchSummary.citedSources && searchSummary.citedSources.length > 0) {
-    searchSummary.citedSources.slice(0, 5).forEach((src, idx) => {
-      log(`  ${idx + 1}. [${src.title}] -> ${src.url}`)
+    searchSummary.citedSources.slice(0, 8).forEach((src, idx) => {
+      log(`  ${idx + 1}. [${src.title}] (${src.source || 'web'}) -> ${src.url}`)
     })
   } else {
     log(`  No external cited sources in AI synthesis (brand evaluated on verified web signals).`)
   }
 
-  log(`\n[2.4 Google Autocomplete Buyer Queries Extracted]`)
+  log(`\n[2.5 Google Autocomplete Buyer Queries Extracted]`)
   if (searchSummary.buyerSearchQueries && searchSummary.buyerSearchQueries.length > 0) {
     searchSummary.buyerSearchQueries.forEach((q, idx) => {
       log(`  ${idx + 1}. "${q}"`)
@@ -279,7 +295,7 @@ async function runDeepForensicTest() {
   }
 
   // Trustpilot Probe for Target Domain
-  log(`\n[2.5 Trustpilot Real-Time Verification Probe]`)
+  log(`\n[2.6 Trustpilot Real-Time Verification Probe]`)
   let trustpilotFound = false
   try {
     const tpRes = await fetch(`https://www.trustpilot.com/review/${targetDomain}`, {
@@ -314,7 +330,7 @@ async function runDeepForensicTest() {
   }
 
   // Regex Unit-Aware Financial Metrics
-  log(`\n[2.6 Unit-Aware AI Text Financial Extractor]`)
+  log(`\n[2.7 Unit-Aware AI Text Financial Extractor]`)
   const regexMetrics = extractFinancialMetricsFromText(snippet)
   if (regexMetrics.monthlyRevenueEstimate) {
     log(`- Revenue Extracted: $${regexMetrics.monthlyRevenueEstimate.midpointMonthly.toLocaleString()}/mo (Range: $${regexMetrics.monthlyRevenueEstimate.minMonthly.toLocaleString()} - $${regexMetrics.monthlyRevenueEstimate.maxMonthly.toLocaleString()})`)
@@ -362,6 +378,22 @@ async function runDeepForensicTest() {
   log(`- Churn & Refund Risk: ${discovery.aiBrandAndCustomerProfile.customerBaseProfile.churnAndRefundRiskFactor}`)
   log(`- SKU Catalog Assessment: ${discovery.aiBrandAndCustomerProfile.skuCatalogAssessment}`)
 
+  // Customer Review Intelligence
+  const cri = discovery.aiBrandAndCustomerProfile.customerReviewIntelligence || discovery.customerReviewIntelligence
+  log(`\n[3.3b Customer Reviews & Brand Reputation in Customer Eyes]`)
+  if (cri) {
+    log(`- Aggregated Star Rating: ${cri.aggregatedStarRating}`)
+    log(`- Overall Sentiment Score: ${cri.overallSentimentScore}/100`)
+    log(`- Estimated Total Reviews: ${cri.estimatedTotalReviews.toLocaleString()}`)
+    log(`- Quality & Repeat Verdict: "${cri.customerQualityVerdict}"`)
+    log(`- Top Customer Praises:`)
+    cri.topCustomerPraises.forEach((p, idx) => log(`    ${idx + 1}. "${p}"`))
+    log(`- Top Customer Complaints:`)
+    cri.topCustomerComplaints.forEach((c, idx) => log(`    ${idx + 1}. "${c}"`))
+  } else {
+    log(`- Customer Review Intelligence: Not generated or fallback used`)
+  }
+
   log(`\n[3.4 Discovered Step 2 Fields]`)
   const df = discovery.discoveredFields
   log(`- Vertical: ${df.vertical} (${df.subNicheName})`)
@@ -378,6 +410,9 @@ async function runDeepForensicTest() {
     log(`  Competitor #${idx + 1}: ${c.name} (${c.domain})`)
     log(`    Estimated AOV: $${c.estimatedAOV} | Target CAC: $${c.estimatedCAC} | CQI Score: ${c.cqiScore}/100`)
     log(`    Winning Mechanism: "${c.winningMechanism}"`)
+    if (c.whySelected) {
+      log(`    Why Selected by AI Mode: "${c.whySelected}"`)
+    }
   })
 
   log(`\n[3.6 2026 Sub-Niche Industry Report]`)
@@ -520,7 +555,9 @@ async function runDeepForensicTest() {
     techScan,
     metaAds,
     benchmark,
-    searchSummary.reviewSentimentScore
+    searchSummary.reviewSentimentScore,
+    cri,
+    searchSummary.citedSources?.length || 0
   )
   const masterCQIScore = computeMasterCQI(pillars)
   const { tier: customerQualityTier, description: tierDescription } =
@@ -631,6 +668,7 @@ async function runDeepForensicTest() {
     techScan,
     skuAnalytics: skuAn,
     aiBrandAndCustomerProfile: discovery.aiBrandAndCustomerProfile,
+    customerReviewIntelligence: cri,
     discoveredFields: df,
     fourSourceWaterfall,
     dataAuthenticityScore: authenticityScore,

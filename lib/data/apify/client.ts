@@ -24,7 +24,8 @@ export async function runApifyActor<T>(
     const timeoutId = setTimeout(() => controller.abort(), timeoutMs)
 
     try {
-      const url = `https://api.apify.com/v2/acts/${encodeURIComponent(cleanActorId)}/run-sync-get-dataset-items?token=${apiKey}&timeout=28&memory=512`
+      const queryTimeout = Math.max(15, Math.min(60, Math.floor((timeoutMs - 2000) / 1000)))
+      const url = `https://api.apify.com/v2/acts/${encodeURIComponent(cleanActorId)}/run-sync-get-dataset-items?token=${apiKey}&timeout=${queryTimeout}&memory=512`
 
       const response = await fetch(url, {
         method: 'POST',

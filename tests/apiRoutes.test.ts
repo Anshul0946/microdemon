@@ -72,5 +72,5 @@ describe('Backend API Pipeline Routes', () => {
     })
     const pdfRes = await exportPdfPost(pdfReq)
     expect(pdfRes.headers.get('content-type')).toBe('application/pdf')
-  }, 80000)
+  }, 120000)
 })

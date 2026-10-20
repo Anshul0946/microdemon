@@ -9,6 +9,7 @@ import {
   assessBrandScaleAndCompetitor,
   evaluateUniversalBlunderGuard,
   synthesizeExecutiveBriefing,
+  GoogleSerpSummary,
 } from '@/lib/data'
 import {
   computeFinancialMetrics,
@@ -134,7 +135,7 @@ export async function POST(req: NextRequest) {
             oldestActiveAdDays: 0,
           }
 
-    const searchSummary =
+    const searchSummary: GoogleSerpSummary =
       searchSettled.status === 'fulfilled'
         ? searchSettled.value
         : {
@@ -143,6 +144,17 @@ export async function POST(req: NextRequest) {
             reviewSentimentScore: 82,
             detectedPublicFloorRevenue: 0,
             publicRevenueEvidence: undefined,
+            aiPresenceStatus: 'MODERATE_AI_PRESENCE',
+            citedSources: [],
+            buyerSearchQueries: [],
+            parsedOverview: {
+              normalizedText: `${cleanDomain} commercial footprint.`,
+              citedSources: [],
+              aiPresenceStatus: 'MODERATE_AI_PRESENCE',
+              extractedMetrics: {
+                competitorDomains: [],
+              },
+            },
             realityCheck: {
               overrideApplied: false,
               originalMonthlyRevenue: rawInputs.monthlyRevenue,
@@ -199,6 +211,7 @@ export async function POST(req: NextRequest) {
 
     // Deterministic Scoring
     const financials = computeFinancialMetrics(calibratedInputs, storefront, benchmark)
+    const reviewIntel = groqAssessment?.customerReviewIntelligence
     const pillars = computePillarScores(
       calibratedInputs,
       financials,
@@ -206,7 +219,9 @@ export async function POST(req: NextRequest) {
       techScan,
       metaAds,
       benchmark,
-      searchSummary.reviewSentimentScore
+      searchSummary.reviewSentimentScore,
+      reviewIntel,
+      searchSummary.citedSources?.length || 0
     )
     const masterCQIScore = computeMasterCQI(pillars)
     const { tier: customerQualityTier, description: tierDescription } =
@@ -290,6 +305,7 @@ export async function POST(req: NextRequest) {
       skuAnalytics: storefront.skuAnalytics,
       fourSourceWaterfall,
       dataAuthenticityScore,
+      customerReviewIntelligence: reviewIntel,
       createdAt: new Date().toISOString(),
     }
 

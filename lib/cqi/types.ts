@@ -50,6 +50,15 @@ export interface SkuAnalytics {
   }
 }
 
+export interface CustomerReviewIntelligence {
+  overallSentimentScore: number // 0–100
+  aggregatedStarRating: number // e.g. 4.6 (out of 5.0)
+  estimatedTotalReviews: number
+  topCustomerPraises: string[] // 3 items
+  topCustomerComplaints: string[] // 3 items
+  customerQualityVerdict: string
+}
+
 export interface AiBrandAndCustomerProfile {
   aiPresenceStatus: 'STRONG_AI_PRESENCE' | 'MODERATE_AI_PRESENCE' | 'WEAK_AI_PRESENCE' | 'ZERO_AI_PRESENCE'
   googleAiOverviewSummary: string
@@ -63,6 +72,7 @@ export interface AiBrandAndCustomerProfile {
   skuCatalogAssessment: string
   citedSources?: Array<{ title: string; url: string }>
   buyerSearchQueries?: string[]
+  customerReviewIntelligence?: CustomerReviewIntelligence
 }
 
 export interface DiscoveredRevenueMetric {
@@ -93,6 +103,7 @@ export interface DiscoveredCompetitor {
   estimatedCAC: number
   cqiScore: number
   winningMechanism: string
+  whySelected?: string
 }
 
 export interface DiscoveredFields {
@@ -117,6 +128,7 @@ export interface DiscoveryPayload {
   discoveredFields: DiscoveredFields
   techScan: TechScanResult
   metaAds: MetaAdTelemetry
+  customerReviewIntelligence?: CustomerReviewIntelligence
 }
 
 export interface PrivateIntakeInputs {
@@ -284,6 +296,7 @@ export interface AuditReportResult {
   discoveredFields?: DiscoveredFields
   fourSourceWaterfall?: FourSourceWaterfall
   dataAuthenticityScore?: DataAuthenticityScore
+  customerReviewIntelligence?: CustomerReviewIntelligence
   createdAt: string
 }
 

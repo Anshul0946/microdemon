@@ -7,12 +7,21 @@ export type AiPresenceStatus =
 export interface CitedSource {
   title: string
   url: string
+  source?: string
+  snippet?: string
 }
 
 export interface ParsedAiOverview {
   normalizedText: string
   citedSources: CitedSource[]
   aiPresenceStatus: AiPresenceStatus
+  actorUsed?: string
+  rawAiAnswers?: {
+    q1Scale?: string
+    q2Reviews?: string
+    q3Competitors?: string
+    q4IndustryReport?: string
+  }
   extractedMetrics: {
     monthlyRevenueEstimate?: {
       minMonthly: number
@@ -79,62 +88,188 @@ export function normalizeRawText(rawText: string): string {
 
 export function parseGoogleAiModeResponse(
   rawItems: unknown[],
-  domain: string
+  domain: string,
+  actorUsed?: string
 ): ParsedAiOverview {
   const cleanDomain = domain.toLowerCase().replace(/^(https?:\/\/)?(www\.)?/, '').split('/')[0]
   const textBlocks: string[] = []
+  const storeMetaDescriptionBlocks: string[] = []
   const sourcesMap = new Map<string, string>()
+
+  const rawAiAnswers = {
+    q1Scale: '',
+    q2Reviews: '',
+    q3Competitors: '',
+    q4IndustryReport: '',
+  }
+
+  const helperExtractTextFromBlock = (tb: unknown): string => {
+    if (!tb) return ''
+    if (typeof tb === 'string') return tb.trim()
+    if (typeof tb === 'object') {
+      const b = tb as Record<string, unknown>
+      const direct = (b.text || b.content || b.heading || b.paragraph || b.answer || '') as string
+      if (typeof direct === 'string' && direct.trim()) return direct.trim()
+      if (Array.isArray(b.items)) {
+        return b.items.map((it) => (typeof it === 'string' ? it : (it as Record<string, unknown>)?.text || '')).filter(Boolean).join('\n')
+      }
+      if (Array.isArray(b.rows)) {
+        return b.rows
+          .map((row) => (Array.isArray(row) ? row.join(' | ') : (row as Record<string, unknown>)?.text || ''))
+          .filter(Boolean)
+          .join('\n')
+      }
+    }
+    return ''
+  }
+
+  const helperAddCitation = (rawSrc: unknown) => {
+    if (!rawSrc || typeof rawSrc !== 'object') return
+    const src = rawSrc as Record<string, unknown>
+    const url = typeof src.url === 'string' ? src.url : typeof src.link === 'string' ? src.link : ''
+    const rawTitle = typeof src.title === 'string' ? src.title : typeof src.name === 'string' ? src.name : typeof src.source === 'string' ? src.source : typeof src.domain === 'string' ? src.domain : url
+    const title = String(rawTitle || '').trim()
+    if (url) {
+      try {
+        const u = new URL(url)
+        const host = u.hostname.replace(/^www\./, '').toLowerCase()
+        if (!sourcesMap.has(url) && !host.includes('google')) {
+          sourcesMap.set(url, title || host)
+        }
+      } catch {
+        // Ignore malformed URL
+      }
+    }
+  }
 
   if (Array.isArray(rawItems)) {
     for (const item of rawItems) {
       if (!item) continue
 
-      // Extract text content from various Google AI overview schemas
       if (typeof item === 'string') {
         textBlocks.push(item)
-      } else if (typeof item === 'object') {
+        continue
+      }
+
+      if (typeof item === 'object') {
         const itemObj = item as Record<string, unknown>
-        if (typeof itemObj.text === 'string') textBlocks.push(itemObj.text)
-        if (typeof itemObj.answer_text === 'string') textBlocks.push(itemObj.answer_text)
-        if (typeof itemObj.answer === 'string') textBlocks.push(itemObj.answer)
-        if (typeof itemObj.aiOverviewText === 'string') textBlocks.push(itemObj.aiOverviewText)
-        if (itemObj.ai_overview && typeof (itemObj.ai_overview as Record<string, unknown>).answer_text === 'string') {
-          textBlocks.push((itemObj.ai_overview as Record<string, unknown>).answer_text as string)
+
+        // Check if explicitly flagged as store meta description
+        if (itemObj.isStoreMetaDescription === true) {
+          if (typeof itemObj.text === 'string' && itemObj.text.trim()) {
+            storeMetaDescriptionBlocks.push(itemObj.text.trim())
+          }
+          continue
         }
-        if (Array.isArray(itemObj.text_blocks)) {
-          for (const tb of itemObj.text_blocks) {
-            if (typeof tb === 'string') textBlocks.push(tb)
-            else if (tb && typeof (tb as Record<string, unknown>).text === 'string') {
-              textBlocks.push((tb as Record<string, unknown>).text as string)
+
+        const itemQuery = typeof itemObj.q === 'string' ? itemObj.q : typeof itemObj.query === 'string' ? itemObj.query : ''
+        const collectedFromItem: string[] = []
+
+        // 1. Direct answer/text fields
+        if (typeof itemObj.answer_text === 'string' && itemObj.answer_text.trim()) {
+          collectedFromItem.push(itemObj.answer_text.trim())
+        }
+        if (typeof itemObj.text === 'string' && itemObj.text.trim()) {
+          collectedFromItem.push(itemObj.text.trim())
+        }
+        if (typeof itemObj.markdown === 'string' && itemObj.markdown.trim()) {
+          collectedFromItem.push(itemObj.markdown.trim())
+        }
+        if (typeof itemObj.answer === 'string' && itemObj.answer.trim()) {
+          collectedFromItem.push(itemObj.answer.trim())
+        }
+        if (typeof itemObj.aiOverviewText === 'string' && itemObj.aiOverviewText.trim()) {
+          collectedFromItem.push(itemObj.aiOverviewText.trim())
+        }
+
+        // 2. Iterate over blocks / text_blocks (litescrape~google-ai-mode / litescrape~google-ai-overview)
+        const rawBlocks = (Array.isArray(itemObj.blocks) ? itemObj.blocks : Array.isArray(itemObj.text_blocks) ? itemObj.text_blocks : []) as unknown[]
+        for (const block of rawBlocks) {
+          const extracted = helperExtractTextFromBlock(block)
+          if (extracted) collectedFromItem.push(extracted)
+        }
+
+        // 3. subimpact~google-ai-mode-scraper (nested ai_overview)
+        if (itemObj.ai_overview && typeof itemObj.ai_overview === 'object') {
+          const aiObj = itemObj.ai_overview as Record<string, unknown>
+          if (typeof aiObj.answer_text === 'string' && aiObj.answer_text.trim()) {
+            collectedFromItem.push(aiObj.answer_text.trim())
+          }
+          if (typeof aiObj.markdown === 'string' && aiObj.markdown.trim()) {
+            collectedFromItem.push(aiObj.markdown.trim())
+          }
+          if (Array.isArray(aiObj.text_blocks)) {
+            for (const tb of aiObj.text_blocks) {
+              const extracted = helperExtractTextFromBlock(tb)
+              if (extracted) collectedFromItem.push(extracted)
             }
+          }
+          if (Array.isArray(aiObj.references)) {
+            for (const r of aiObj.references) helperAddCitation(r)
+          }
+          if (Array.isArray(aiObj.sources)) {
+            for (const s of aiObj.sources) helperAddCitation(s)
           }
         }
 
-        // Extract sources / references
-        const rawSources = (itemObj.sources || itemObj.references || itemObj.cited_sources || []) as Array<Record<string, unknown>>
+        // 4. gauravlabs~google-serp-api / litescrape~google-search (answer_box, knowledge_graph, organic)
+        if (itemObj.answer_box && typeof itemObj.answer_box === 'object') {
+          const ab = itemObj.answer_box as Record<string, unknown>
+          const snippet = (ab.snippet || ab.answer || ab.title || '') as string
+          if (snippet) collectedFromItem.push(snippet)
+        }
+        if (itemObj.knowledge_graph && typeof itemObj.knowledge_graph === 'object') {
+          const kg = itemObj.knowledge_graph as Record<string, unknown>
+          const desc = (kg.description || kg.title || '') as string
+          if (desc) collectedFromItem.push(desc)
+        }
+        const organicList = (Array.isArray(itemObj.organic_results)
+          ? itemObj.organic_results
+          : Array.isArray(itemObj.organic)
+          ? itemObj.organic
+          : Array.isArray(itemObj.organicResults)
+          ? itemObj.organicResults
+          : []) as Array<Record<string, unknown>>
+        for (const org of organicList) {
+          const orgTitle = (org.title || '') as string
+          const orgSnippet = (org.snippet || org.description || '') as string
+          if (orgSnippet || orgTitle) {
+            collectedFromItem.push(`${orgTitle}: ${orgSnippet}`.trim())
+          }
+          helperAddCitation({ url: org.link || org.url, title: orgTitle || orgSnippet })
+        }
+
+        // Citations / References across actors
+        const rawSources = (itemObj.references || itemObj.sources || itemObj.citations || itemObj.cited_sources || []) as Array<Record<string, unknown>>
         if (Array.isArray(rawSources)) {
-          for (const src of rawSources) {
-            const url = typeof src?.url === 'string' ? src.url : typeof src?.link === 'string' ? src.link : ''
-            const rawTitle = typeof src?.title === 'string' ? src.title : typeof src?.name === 'string' ? src.name : url
-            const title = String(rawTitle).trim()
-            if (url) {
-              try {
-                const u = new URL(url)
-                const host = u.hostname.replace(/^www\./, '').toLowerCase()
-                if (!sourcesMap.has(url) && !host.includes('google')) {
-                  sourcesMap.set(url, title)
-                }
-              } catch {
-                // Ignore invalid URL
-              }
-            }
+          for (const s of rawSources) helperAddCitation(s)
+        }
+
+        const itemCombined = collectedFromItem.join('\n\n')
+        if (itemCombined.trim()) {
+          textBlocks.push(itemCombined.trim())
+
+          // Categorize into 4 intelligence queries
+          const qLower = itemQuery.toLowerCase()
+          const combinedLower = itemCombined.toLowerCase()
+          if (qLower.includes('revenue') || qLower.includes('annual') || qLower.includes('traffic') || (!rawAiAnswers.q1Scale && /revenue|sales|annual|arr|\bturnover\b/i.test(combinedLower))) {
+            rawAiAnswers.q1Scale = (rawAiAnswers.q1Scale ? rawAiAnswers.q1Scale + '\n\n' : '') + itemCombined
+          } else if (qLower.includes('review') || qLower.includes('complaint') || qLower.includes('rating') || (!rawAiAnswers.q2Reviews && /reviews?|rating|complaint|praise|trustpilot/i.test(combinedLower))) {
+            rawAiAnswers.q2Reviews = (rawAiAnswers.q2Reviews ? rawAiAnswers.q2Reviews + '\n\n' : '') + itemCombined
+          } else if (qLower.includes('competitor') || qLower.includes('websites') || (!rawAiAnswers.q3Competitors && /competitor|alternative|vs\b|rival/i.test(combinedLower))) {
+            rawAiAnswers.q3Competitors = (rawAiAnswers.q3Competitors ? rawAiAnswers.q3Competitors + '\n\n' : '') + itemCombined
+          } else if (qLower.includes('benchmark') || qLower.includes('industry') || (!rawAiAnswers.q4IndustryReport && /benchmark|industry report|aov|cac|mer|return rate/i.test(combinedLower))) {
+            rawAiAnswers.q4IndustryReport = (rawAiAnswers.q4IndustryReport ? rawAiAnswers.q4IndustryReport + '\n\n' : '') + itemCombined
           }
         }
       }
     }
   }
 
-  const rawCombinedText = textBlocks.join('\n\n')
+  // Never overwrite real AI Mode text with store meta description
+  // Only fallback to store meta description if real textBlocks are completely empty
+  const blocksToUse = textBlocks.length > 0 ? textBlocks : storeMetaDescriptionBlocks
+  const rawCombinedText = blocksToUse.join('\n\n')
   const normalizedText = normalizeRawText(rawCombinedText)
 
   const citedSources: CitedSource[] = Array.from(sourcesMap.entries()).map(([url, title]) => ({
@@ -156,6 +291,8 @@ export function parseGoogleAiModeResponse(
     normalizedText,
     citedSources,
     aiPresenceStatus,
+    actorUsed,
+    rawAiAnswers,
     extractedMetrics,
   }
 }

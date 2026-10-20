@@ -7,6 +7,7 @@ import {
   PillarScores,
   MarginLeak,
   PrivateIntakeInputs,
+  CustomerReviewIntelligence,
 } from './types'
 
 export function computeFinancialMetrics(
@@ -54,7 +55,9 @@ export function computePillarScores(
   techScan: TechScanResult,
   metaAds: MetaAdTelemetry,
   benchmark: VerticalBenchmark,
-  serpScore = 80
+  serpScore = 80,
+  reviewIntel?: CustomerReviewIntelligence,
+  citedSourcesCount = 0
 ): PillarScores {
   // --- PILLAR 1: Unit Economics & First-Order Contribution (25% Weight) ---
   let p1 = 55 + (financials.currentMER - benchmark.healthyMER) * 12
@@ -123,16 +126,42 @@ export function computePillarScores(
   p4 += Math.max(0, 25 - scriptBloatPenalty)
   const techStack = Math.max(15, Math.min(98, Math.round(p4)))
 
-  // --- PILLAR 5: Brand Authority, Trust & AI Search Visibility (15% Weight) ---
-  let p5 = 0
-  if (techScan.detectedReviews.length > 0) p5 += 35
-  if (shopifyData.discountMarkedPct < 40) {
-    p5 += 35
+  // --- PILLAR 5: Brand Authority, Customer Reviews & AI Search Visibility (15% Weight) ---
+  // Sub-weight A: 35% Customer Review Sentiment & Star Rating in Customer Eyes
+  let p5Reviews = 0
+  if (reviewIntel) {
+    const sentimentComp = ((reviewIntel.overallSentimentScore || 80) / 100) * 20
+    const starComp = Math.min(15, ((reviewIntel.aggregatedStarRating || 4.2) / 5) * 15)
+    p5Reviews = sentimentComp + starComp
   } else {
-    p5 += Math.max(10, Math.round(35 - ((shopifyData.discountMarkedPct - 40) / 60) * 25))
+    p5Reviews = Math.min(35, Math.round((serpScore / 100) * 35))
   }
-  p5 += Math.min(30, Math.round((serpScore / 100) * 30))
-  const brandAuthority = Math.max(20, Math.min(96, Math.round(p5)))
+
+  // Sub-weight B: 35% Google AI Mode Visibility & External Citation Authority
+  let p5Ai = 0
+  if (citedSourcesCount >= 4) {
+    p5Ai = 35
+  } else if (citedSourcesCount >= 2) {
+    p5Ai = 30
+  } else if (citedSourcesCount >= 1) {
+    p5Ai = 25
+  } else {
+    p5Ai = Math.max(12, Math.min(26, Math.round((serpScore / 100) * 25)))
+  }
+
+  // Sub-weight C: 30% On-Site Trust Architecture (Review widgets + low discount strikethrough abuse)
+  let p5Trust = 0
+  if (techScan.detectedReviews.length > 0) p5Trust += 15
+  if (shopifyData.discountMarkedPct < 30) {
+    p5Trust += 15
+  } else if (shopifyData.discountMarkedPct < 50) {
+    p5Trust += 10
+  } else {
+    p5Trust += 5
+  }
+
+  const p5 = p5Reviews + p5Ai + p5Trust
+  const brandAuthority = Math.max(20, Math.min(98, Math.round(p5)))
 
   return {
     unitEconomics,
